@@ -5,17 +5,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/mrexodia/service-manager/config"
-	"github.com/mrexodia/service-manager/manager"
-	"github.com/mrexodia/service-manager/web"
 )
 
 func main() {
 	fmt.Println("Starting Service Manager...")
 
 	// Load configuration
-	cfg, err := config.Load()
+	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		fmt.Println("Creating empty services.yaml file...")
@@ -23,11 +19,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Failed to create services.yaml: %v\n", err)
 			os.Exit(1)
 		}
-		cfg = &config.Config{Services: []config.ServiceConfig{}}
+		cfg = &Config{Services: []ServiceConfig{}}
 	}
 
 	// Create service manager
-	mgr := manager.New()
+	mgr := NewManager()
 
 	// Load and start services
 	if err := mgr.LoadConfig(cfg); err != nil {
@@ -40,7 +36,7 @@ func main() {
 	fmt.Println("Watching services.yaml for changes...")
 
 	// Start web server with configured host/port
-	server := web.New(mgr)
+	server := NewServer(mgr)
 
 	// Channel to signal web server errors
 	serverErrChan := make(chan error, 1)

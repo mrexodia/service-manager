@@ -1,4 +1,4 @@
-package web
+package main
 
 import (
 	"encoding/json"
@@ -7,13 +7,11 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"github.com/mrexodia/service-manager/config"
-	"github.com/mrexodia/service-manager/manager"
 )
 
 // Server represents the web server
 type Server struct {
-	manager  *manager.Manager
+	manager  *Manager
 	host     string
 	port     int
 	upgrader websocket.Upgrader
@@ -22,7 +20,7 @@ type Server struct {
 }
 
 // New creates a new web server
-func New(mgr *manager.Manager) *Server {
+func NewServer(mgr *Manager) *Server {
 	// Parse authorization config once
 	var username, password string
 	cfg := mgr.GetGlobalConfig()
@@ -171,7 +169,7 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 
 // createService creates a new service
 func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
-	var cfg config.ServiceConfig
+	var cfg ServiceConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -198,7 +196,7 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 // updateService updates an existing service
 func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var cfg config.ServiceConfig
+	var cfg ServiceConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -395,9 +393,9 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	path := r.PathValue("path")
 	if path == "" {
-		http.ServeFile(w, r, "web/static/index.html")
+		http.ServeFile(w, r, "static/index.html")
 		return
 	}
 
-	http.ServeFile(w, r, "web/static/"+path)
+	http.ServeFile(w, r, "static/"+path)
 }

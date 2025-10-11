@@ -1,4 +1,4 @@
-package service
+package main
 
 import (
 	"bufio"
@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/mrexodia/service-manager/config"
 )
 
 const (
@@ -23,7 +21,7 @@ type FailureCallback func(serviceName string, consecutiveFailures int, exitCode 
 
 // Service represents a managed service instance
 type Service struct {
-	Config    config.ServiceConfig
+	Config    ServiceConfig
 	cmd       *exec.Cmd
 	running   bool
 	pid       int
@@ -155,7 +153,7 @@ func (b *Broadcaster) Broadcast(msg string) {
 }
 
 // New creates a new service instance
-func New(cfg config.ServiceConfig) *Service {
+func NewService(cfg ServiceConfig) *Service {
 	svc := &Service{
 		Config:          cfg,
 		stdoutBuf:       NewCircularBuffer(logBufferSize),

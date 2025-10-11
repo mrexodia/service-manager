@@ -1,4 +1,4 @@
-package manager
+package main
 
 import (
 	"fmt"
@@ -6,21 +6,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mrexodia/service-manager/config"
-	"github.com/mrexodia/service-manager/service"
-	"github.com/mrexodia/service-manager/webhook"
 	"github.com/robfig/cron/v3"
 )
 
 // Manager manages all services
 type Manager struct {
-	services        map[string]*service.Service
+	services        map[string]*Service
 	order           []string // Maintains service order from YAML
 	cronScheduler   *cron.Cron
 	cronEntries     map[string]cron.EntryID // Maps service name to cron entry ID
 	lastModTime     time.Time
-	globalConfig    config.GlobalConfig
-	webhookNotifier *webhook.Notifier
+	globalConfig    GlobalConfig
+	webhookNotifier *Notifier
 	webhookSent     map[string]bool // Track if webhook was sent for a service (reset on success)
 	webhookWg       sync.WaitGroup  // Track pending webhook goroutines
 	mu              sync.RWMutex
@@ -28,12 +25,12 @@ type Manager struct {
 }
 
 // New creates a new manager
-func New() *Manager {
+func NewManager() *Manager {
 	cronScheduler := cron.New()
 	cronScheduler.Start()
 
 	return &Manager{
-		services:      make(map[string]*service.Service),
+		services:      make(map[string]*Service),
 		order:         make([]string, 0),
 		cronScheduler: cronScheduler,
 		cronEntries:   make(map[string]cron.EntryID),
@@ -43,13 +40,13 @@ func New() *Manager {
 }
 
 // LoadConfig loads services from configuration and starts them
-func (m *Manager) LoadConfig(cfg *config.Config) error {
+func (m *Manager) LoadConfig(cfg *Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Store global config and create webhook notifier
 	m.globalConfig = cfg.Global
-	m.webhookNotifier = webhook.NewNotifier(cfg.Global.FailureWebhookURL)
+	m.webhookNotifier = NewNotifier(cfg.Global.FailureWebhookURL)
 
 	// Record the modification time
 	if info, err := os.Stat("services.yaml"); err == nil {
@@ -57,7 +54,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 	}
 
 	for _, svcCfg := range cfg.Services {
-		svc := service.New(svcCfg)
+		svc := NewService(svcCfg)
 		m.services[svcCfg.Name] = svc
 		m.order = append(m.order, svcCfg.Name)
 
@@ -86,7 +83,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 
 // ReloadConfig reloads the configuration and updates services
 func (m *Manager) ReloadConfig() error {
-	cfg, err := config.Load()
+	cfg, err := LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -96,10 +93,10 @@ func (m *Manager) ReloadConfig() error {
 
 	// Update global config and webhook notifier
 	m.globalConfig = cfg.Global
-	m.webhookNotifier = webhook.NewNotifier(cfg.Global.FailureWebhookURL)
+	m.webhookNotifier = NewNotifier(cfg.Global.FailureWebhookURL)
 
 	// Build a map of new services
-	newServices := make(map[string]config.ServiceConfig)
+	newServices := make(map[string]ServiceConfig)
 	newOrder := make([]string, 0, len(cfg.Services))
 	for _, svcCfg := range cfg.Services {
 		newServices[svcCfg.Name] = svcCfg
@@ -124,7 +121,7 @@ func (m *Manager) ReloadConfig() error {
 				// Config changed, stop existing and create new
 				m.unscheduleService(name)
 				existing.Stop()
-				newSvc := service.New(svcCfg)
+				newSvc := NewService(svcCfg)
 				newSvc.SetFailureCallback(m.handleServiceFailure)
 				m.services[name] = newSvc
 
@@ -142,7 +139,7 @@ func (m *Manager) ReloadConfig() error {
 			}
 		} else {
 			// New service
-			svc := service.New(svcCfg)
+			svc := NewService(svcCfg)
 			svc.SetFailureCallback(m.handleServiceFailure)
 			m.services[name] = svc
 
@@ -172,7 +169,7 @@ func (m *Manager) ReloadConfig() error {
 }
 
 // GetService returns a service by name
-func (m *Manager) GetService(name string) (*service.Service, error) {
+func (m *Manager) GetService(name string) (*Service, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -185,18 +182,18 @@ func (m *Manager) GetService(name string) (*service.Service, error) {
 }
 
 // GetGlobalConfig returns the global configuration
-func (m *Manager) GetGlobalConfig() config.GlobalConfig {
+func (m *Manager) GetGlobalConfig() GlobalConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.globalConfig
 }
 
 // GetAllServices returns all services in YAML order
-func (m *Manager) GetAllServices() []*service.Service {
+func (m *Manager) GetAllServices() []*Service {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	services := make([]*service.Service, 0, len(m.order))
+	services := make([]*Service, 0, len(m.order))
 	for _, name := range m.order {
 		if svc, exists := m.services[name]; exists {
 			services = append(services, svc)
@@ -214,7 +211,7 @@ func (m *Manager) EnableService(name string) error {
 	}
 
 	// Update enabled flag in YAML
-	if err := config.SetServiceEnabled(name, true); err != nil {
+	if err := SetServiceEnabledConfig(name, true); err != nil {
 		return fmt.Errorf("failed to update enabled flag: %w", err)
 	}
 
@@ -230,7 +227,7 @@ func (m *Manager) DisableService(name string) error {
 	}
 
 	// Update enabled flag in YAML
-	if err := config.SetServiceEnabled(name, false); err != nil {
+	if err := SetServiceEnabledConfig(name, false); err != nil {
 		return fmt.Errorf("failed to update enabled flag: %w", err)
 	}
 
@@ -269,7 +266,7 @@ func (m *Manager) RestartService(name string) error {
 }
 
 // CreateService creates a new service and adds it to the config
-func (m *Manager) CreateService(cfg config.ServiceConfig) error {
+func (m *Manager) CreateService(cfg ServiceConfig) error {
 	// Check if service already exists
 	m.mu.RLock()
 	if _, exists := m.services[cfg.Name]; exists {
@@ -279,7 +276,7 @@ func (m *Manager) CreateService(cfg config.ServiceConfig) error {
 	m.mu.RUnlock()
 
 	// Add to YAML file
-	if err := config.AddService(cfg); err != nil {
+	if err := AddServiceConfig(cfg); err != nil {
 		return fmt.Errorf("failed to add service to config: %w", err)
 	}
 
@@ -288,7 +285,7 @@ func (m *Manager) CreateService(cfg config.ServiceConfig) error {
 }
 
 // UpdateService updates an existing service in the config
-func (m *Manager) UpdateService(name string, cfg config.ServiceConfig) error {
+func (m *Manager) UpdateService(name string, cfg ServiceConfig) error {
 	// Check if service exists
 	m.mu.RLock()
 	if _, exists := m.services[name]; !exists {
@@ -298,7 +295,7 @@ func (m *Manager) UpdateService(name string, cfg config.ServiceConfig) error {
 	m.mu.RUnlock()
 
 	// Update YAML file
-	if err := config.UpdateService(name, cfg); err != nil {
+	if err := UpdateServiceConfig(name, cfg); err != nil {
 		return fmt.Errorf("failed to update service in config: %w", err)
 	}
 
@@ -317,7 +314,7 @@ func (m *Manager) DeleteService(name string) error {
 	m.mu.RUnlock()
 
 	// Delete from YAML file
-	if err := config.DeleteService(name); err != nil {
+	if err := DeleteServiceConfig(name); err != nil {
 		return fmt.Errorf("failed to delete service from config: %w", err)
 	}
 
@@ -360,7 +357,7 @@ func (m *Manager) StartConfigWatch() {
 }
 
 // scheduleService adds a service to the cron scheduler
-func (m *Manager) scheduleService(name string, svc *service.Service) error {
+func (m *Manager) scheduleService(name string, svc *Service) error {
 	// Remove existing schedule if any
 	m.unscheduleService(name)
 
@@ -467,7 +464,7 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 
 	// Send webhook
 	if m.webhookNotifier != nil {
-		payload := webhook.FailurePayload{
+		payload := FailurePayload{
 			ServiceName:  serviceName,
 			Timestamp:    time.Now(),
 			FailureCount: consecutiveFailures,
@@ -495,7 +492,7 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 }
 
 // configEqual compares two service configs for equality
-func configEqual(a, b config.ServiceConfig) bool {
+func configEqual(a, b ServiceConfig) bool {
 	if a.Name != b.Name || a.Command != b.Command || a.Workdir != b.Workdir {
 		return false
 	}

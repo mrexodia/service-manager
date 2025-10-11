@@ -1,4 +1,4 @@
-package config
+package main
 
 import (
 	"fmt"
@@ -35,8 +35,8 @@ type Config struct {
 
 const configFile = "services.yaml"
 
-// Load reads and parses the YAML configuration file
-func Load() (*Config, error) {
+// LoadConfig reads and parses the YAML configuration file
+func LoadConfig() (*Config, error) {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -61,8 +61,8 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// AddService adds a new service to the YAML file while preserving comments
-func AddService(service ServiceConfig) error {
+// AddServiceConfig adds a new service to the YAML file while preserving comments
+func AddServiceConfig(service ServiceConfig) error {
 	// Read the raw YAML file
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -94,8 +94,8 @@ func AddService(service ServiceConfig) error {
 	return writeYAML(&root)
 }
 
-// UpdateService updates an existing service in the YAML file while preserving comments
-func UpdateService(name string, service ServiceConfig) error {
+// UpdateServiceConfig updates an existing service in the YAML file while preserving comments
+func UpdateServiceConfig(name string, service ServiceConfig) error {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %w", err)
@@ -140,8 +140,8 @@ func UpdateService(name string, service ServiceConfig) error {
 	return writeYAML(&root)
 }
 
-// DeleteService removes a service from the YAML file while preserving comments
-func DeleteService(name string) error {
+// DeleteServiceConfig removes a service from the YAML file while preserving comments
+func DeleteServiceConfig(name string) error {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %w", err)
@@ -180,8 +180,8 @@ func DeleteService(name string) error {
 	return writeYAML(&root)
 }
 
-// SetServiceEnabled updates the enabled flag for a service
-func SetServiceEnabled(name string, enabled bool) error {
+// SetServiceEnabledConfig updates the enabled flag for a service
+func SetServiceEnabledConfig(name string, enabled bool) error {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %w", err)

@@ -17,7 +17,9 @@ A simple service manager written in Go that manages multiple services defined in
 - Persistent enable/disable state via YAML `enabled` field
 - Automatic config reload when `services.yaml` changes (5-second polling)
 - Preserve service order as defined in YAML
-- Web UI on port 4321 for service management
+- Configurable web UI host and port (default 127.0.0.1:4321)
+- HTTP Basic Authorization support for API endpoints
+- Webhook notifications for repeated service failures (configurable threshold)
 - Live log streaming (last ~10KB + real-time updates)
 - Start/stop services via web UI (persists to YAML)
 - Edit existing services and create new services via web UI
@@ -25,17 +27,20 @@ A simple service manager written in Go that manages multiple services defined in
 
 ## Architecture
 
+All components are implemented in the `main` package in the root directory for simplicity.
+
 ### Components
 
-#### 1. Configuration Loader
+#### 1. Configuration Loader (`config.go`)
 - Reads `services.yaml` from the current directory
-- Parses service definitions into structs with comment preservation (using yaml.v3 Node API)
+- Parses global config and service definitions with comment preservation (using yaml.v3 Node API)
 - Validates configuration
 - Updates YAML file when services are created/edited while preserving comments
 - Provides `SetServiceEnabled()` to update the enabled flag in YAML
 - `IsEnabled()` helper returns true if enabled field is nil or true (backwards compatibility)
+- Supports global configuration: host, port, failure_webhook_url, failure_retries, authorization
 
-#### 2. Service Manager
+#### 2. Service Manager (`manager.go`)
 - Core orchestration component
 - Maintains map of service name → service instance
 - Maintains service order as defined in YAML (preserves insertion order)
@@ -46,18 +51,20 @@ A simple service manager written in Go that manages multiple services defined in
 - Watches config file for changes (5-second polling interval)
 - Automatically reloads config when `services.yaml` is modified
 - Tracks file modification time to avoid unnecessary reloads
+- Integrates webhook notifier for service failure notifications
 - `StartService()` sets `enabled=true` in YAML and starts the process (or registers cron)
 - `StopService()` sets `enabled=false` in YAML and stops the process (or unregisters cron)
 - `RestartService()` restarts without changing enabled state (continuous only)
 - `RunNow()` immediately runs a scheduled service (409 Conflict if already running)
 
-#### 3. Service Instance
+#### 3. Service Instance (`service.go`)
 - Represents a single managed service
 - **For continuous services**:
   - Manages the process (cmd.Cmd)
   - Captures stdout/stderr to log files
   - Provides status information (running, stopped, pid, uptime)
   - Auto-restart on crash (if enabled)
+  - Tracks consecutive failure count for webhook notifications
 - **For scheduled services**:
   - Registers cron job with scheduler
   - Tracks next run time, last run time, last exit code, last duration
@@ -66,7 +73,7 @@ A simple service manager written in Go that manages multiple services defined in
   - Logs start/exit events to stderr
 - Circular buffer for recent logs (~10KB) for both types
 
-#### 4. Cron Scheduler
+#### 4. Cron Scheduler (integrated in `manager.go`)
 - Built using `github.com/robfig/cron/v3` library
 - Parses standard cron expressions (5 fields: minute, hour, day, month, weekday)
 - Registers scheduled services as cron jobs
@@ -75,16 +82,24 @@ A simple service manager written in Go that manages multiple services defined in
 - Supports job removal on service stop/delete
 - Thread-safe job registration/unregistration
 
-#### 5. Log Manager
+#### 5. Log Manager (integrated in `service.go`)
 - Writes stdout/stderr to `logs/{service-name}-stdout.log` and `logs/{service-name}-stderr.log`
 - Maintains in-memory circular buffer of recent logs for quick retrieval
 - Supports real-time log streaming via channels
 
-#### 6. Web Server
-- HTTP server on port 4321
-- REST API for service control
+#### 6. Web Server (`server.go`)
+- HTTP server on configurable host:port (default 127.0.0.1:4321)
+- REST API for service control using `http.ServeMux` with middleware
+- HTTP Authorization support (configurable via services.yaml)
 - WebSocket for live log streaming
 - Static HTML/JS/CSS for UI
+
+#### 7. Webhook Notifier (`webhook.go`)
+- Sends HTTP POST notifications when services fail repeatedly
+- Configurable webhook URL and failure threshold (default: 3 consecutive failures)
+- JSON payload includes service name, timestamp, failure count, exit code
+- 10-second timeout for webhook requests
+- Only triggers for continuous services that crash repeatedly
 
 ### Technology Stack
 - **Language**: Go 1.21+
@@ -97,6 +112,14 @@ A simple service manager written in Go that manages multiple services defined in
 ## YAML Configuration Format
 
 ```yaml
+# Global configuration (all fields optional)
+config:
+  host: "127.0.0.1"                      # Web UI bind address (default: 127.0.0.1)
+  port: 4321                             # Web UI port (default: 4321)
+  failure_webhook_url: ""                # Webhook URL for failure notifications (empty = disabled)
+  failure_retries: 3                     # Consecutive failures before webhook triggers (default: 3)
+  authorization: "username:password"     # HTTP Basic Auth for API (empty = disabled)
+
 services:
   # Continuous service (long-running)
   - name: example-service
@@ -128,7 +151,14 @@ services:
     enabled: false  # This service won't auto-start
 ```
 
-### Configuration Fields
+### Global Configuration Fields
+- `host` (optional): Web UI bind address, defaults to `127.0.0.1`
+- `port` (optional): Web UI port, defaults to `4321`
+- `failure_webhook_url` (optional): Webhook URL for failure notifications, empty/omitted disables webhooks
+- `failure_retries` (optional): Number of consecutive failures before webhook triggers, defaults to `3`
+- `authorization` (optional): HTTP Basic Auth credentials in `username:password` format, empty/omitted disables auth
+
+### Service Configuration Fields
 - `name` (required): Unique service identifier
 - `command` (required): Executable path or command
 - `args` (optional): List of command-line arguments
@@ -141,21 +171,19 @@ services:
 
 ```
 service-manager/
-├── main.go                 # Entry point
-├── config/
-│   └── config.go          # YAML loading and parsing
-├── manager/
-│   └── manager.go         # Service manager logic
-├── service/
-│   └── service.go         # Individual service instance
+├── main.go                # Entry point, initialization, shutdown
+├── config.go              # YAML loading, parsing, and config updates
+├── manager.go             # Service manager, lifecycle orchestration
+├── service.go             # Individual service instances, process management
+├── server.go              # HTTP server, REST API, WebSocket handlers
+├── webhook.go             # Webhook notifications for service failures
 ├── web/
-│   ├── server.go          # HTTP server and API handlers
 │   └── static/
 │       ├── index.html     # Web UI
-│       ├── style.css
-│       ├── app.js
+│       ├── style.css      # UI styles
+│       ├── app.js         # UI logic
 │       └── favicon.ico    # Icon for web UI and Windows executable
-├── services.yaml          # Service definitions
+├── services.yaml          # Service definitions and global config
 ├── rsrc.syso              # Windows resource file (generated, contains embedded icon)
 └── logs/                  # Created at runtime
     ├── service1-stdout.log
@@ -281,12 +309,13 @@ API responses also include the `enabled` field from the service configuration.
 
 ### Startup
 1. Load `services.yaml` (creates empty config if not exists)
-2. Create `logs/` directory if not exists
-3. Initialize service manager with cron scheduler
-4. Load config and record file modification time
-5. Start enabled services (continuous processes or register cron jobs)
-6. Start config file watcher (5-second polling)
-7. Start web server on port 4321
+2. Parse global config (host, port, webhook URL, failure retries, authorization)
+3. Create `logs/` directory if not exists
+4. Initialize service manager with cron scheduler and webhook notifier
+5. Load service definitions and record file modification time
+6. Start enabled services (continuous processes or register cron jobs)
+7. Start config file watcher (5-second polling)
+8. Start web server on configured host:port with optional authorization
 
 ### Service Start
 1. Create log files for stdout/stderr
@@ -298,10 +327,13 @@ API responses also include the `enabled` field from the service configuration.
 
 ### Service Crash Detection (Continuous Services Only)
 1. Monitor goroutine detects process exit
-2. Log the crash
-3. Wait 1 second (backoff)
-4. Restart the service (only if enabled)
-5. Increment restart counter
+2. Log the crash and capture exit code
+3. Increment consecutive failure counter
+4. If consecutive failures >= configured threshold, send webhook notification
+5. Wait 1 second (backoff)
+6. Restart the service (only if enabled)
+7. Increment restart counter
+8. Reset consecutive failure counter on successful start
 
 ### Scheduled Service Execution
 1. Cron scheduler triggers at scheduled time
@@ -373,6 +405,14 @@ API responses also include the `enabled` field from the service configuration.
 6. Reload configuration
 7. Return success response
 
+### Webhook Notification
+1. Service crashes and consecutive failure count reaches threshold
+2. Build JSON payload with service name, timestamp, failure count, exit code
+3. Send HTTP POST request to configured webhook URL (10-second timeout)
+4. Log success or failure of webhook delivery
+5. Webhook failures are logged but don't affect service management
+6. Subsequent successful starts reset the failure counter
+
 ## Error Handling
 - Invalid YAML on startup: Log error and exit
 - Invalid cron expression: Log error and mark service as disabled
@@ -386,6 +426,9 @@ API responses also include the `enabled` field from the service configuration.
 - Duplicate service name on creation: Return 409 Conflict
 - Update/delete non-existent service: Return 404 Not Found
 - YAML write failure: Return 500 Internal Server Error, rollback not attempted (keep existing file)
+- Webhook delivery failure: Log error, continue service management (non-blocking)
+- Invalid authorization credentials: Return 401 Unauthorized for API requests
+- Missing authorization header when auth enabled: Return 401 Unauthorized
 
 ## Implementation Notes
 - Use `sync.RWMutex` for concurrent access to service map and order slice
@@ -415,3 +458,14 @@ API responses also include the `enabled` field from the service configuration.
   - Cron jobs call service run method which handles overlap prevention
   - Next run time calculated from cron schedule
   - Scheduler started on manager initialization, stopped on shutdown
+- **Webhook Notifications**:
+  - Only triggered for continuous services that crash repeatedly
+  - Consecutive failure counter tracked per service instance
+  - Counter resets on successful service start
+  - Webhook requests have 10-second timeout
+  - Failures logged but non-blocking to service management
+- **HTTP Authorization**:
+  - Basic Auth middleware applied to all API endpoints
+  - Authorization header format: `Authorization: Basic base64(username:password)`
+  - Static files (web UI) served without authentication
+  - Disabled when authorization field empty or omitted in config
