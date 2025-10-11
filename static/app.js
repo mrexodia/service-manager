@@ -103,10 +103,15 @@ function renderServiceList(services) {
             item.appendChild(clock);
         } else {
             const dot = document.createElement('div');
-            // Show grey dot for disabled services, otherwise green/red based on running state
-            if (service.enabled === false) {
+            // Determine dot class based on enabled + running state
+            if (service.enabled === false && !service.running) {
+                // Disabled + Stopped → grey
                 dot.className = 'status-dot disabled';
+            } else if (service.enabled === false && service.running) {
+                // Disabled + Running → green with grey tint
+                dot.className = 'status-dot disabled-running';
             } else {
+                // Enabled → green/red based on running state
                 dot.className = `status-dot ${service.running ? 'running' : 'stopped'}`;
             }
             item.appendChild(dot);
@@ -182,12 +187,9 @@ function showServiceView(service) {
         restartBtn.style.display = 'inline-block';
         runNowBtn.style.display = 'none';
 
-        // Disable all controls if service is disabled
-        if (service.enabled === false) {
-            startBtn.disabled = true;
-            stopBtn.disabled = true;
-            restartBtn.disabled = true;
-        } else if (service.running) {
+        // Enable/disable buttons based on running state only
+        // (Allow runtime control regardless of enabled flag)
+        if (service.running) {
             startBtn.disabled = true;
             stopBtn.disabled = false;
             restartBtn.disabled = false;

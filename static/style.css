@@ -84,6 +84,11 @@ body {
     background-color: #95a5a6;
 }
 
+.status-dot.disabled-running {
+    background-color: #2ecc71;
+    opacity: 0.5;
+}
+
 .service-item-name {
     flex: 1;
 }
