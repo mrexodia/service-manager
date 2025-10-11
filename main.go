@@ -76,7 +76,7 @@ config:
   host: "127.0.0.1"
   port: 4321
   failure_webhook_url: ""
-  max_failure_retries: 3
+  failure_retries: 3
 
 services: []
 `

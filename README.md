@@ -33,25 +33,38 @@ go build
 Services are defined in `services.yaml`. Example:
 
 ```yaml
+# Global configuration
+config:
+  host: "127.0.0.1" # Listen address (default: 127.0.0.1)
+  port: 4321 # Web UI port (default: 4321)
+  failure_webhook_url: "" # HTTP POST webhook for service failures (empty = disabled)
+  failure_retries: 3 # Number of consecutive failures before webhook triggers (default: 3)
 services:
-  # Continuous service (long-running)
-  - name: my-service
-    command: /path/to/executable
-    args:
-      - --arg1
-      - value1
-    workdir: /working/directory
+  # Example: A simple ping service
+  - name: ping-example
+    command: ping
+    args: ['localhost', '-t']
+    workdir: ""
+    env: {}
+    enabled: false
+  # Example: A slower timestamp service (prints every 5 seconds)
+  - name: timestamp-example
+    command: powershell
+    args: ['-Command', 'while($true) { Get-Date; Start-Sleep -Seconds 5 }']
+    workdir: ""
     env:
-      KEY1: value1
-      KEY2: value2
-    enabled: true  # Optional: Set to false to disable auto-start
-
-  # Scheduled service (cron-based)
-  - name: cleanup-job
-    command: /path/to/cleanup-script
-    args:
-      - --deep-clean
-    schedule: "0 2 * * *"  # Run daily at 2:00 AM
+      EXAMPLE_VAR: "hello"
+    enabled: true
+  # Example: Scheduled service that runs every 5 minutes
+  - name: hourly-cleanup
+    command: cmd
+    args: ['/c', 'echo Cleaning up at %DATE% %TIME%']
+    schedule: "*/5 * * * *" # Every 5 minutes
+    enabled: true
+  # Example: One-off service that runs once on startup
+  - name: one-off
+    command: uv
+    args: ['--help']
     enabled: true
 ```
 

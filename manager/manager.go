@@ -6,25 +6,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
 	"github.com/mrexodia/service-manager/config"
 	"github.com/mrexodia/service-manager/service"
 	"github.com/mrexodia/service-manager/webhook"
+	"github.com/robfig/cron/v3"
 )
 
 // Manager manages all services
 type Manager struct {
-	services          map[string]*service.Service
-	order             []string // Maintains service order from YAML
-	cronScheduler     *cron.Cron
-	cronEntries       map[string]cron.EntryID // Maps service name to cron entry ID
-	lastModTime       time.Time
-	globalConfig      config.GlobalConfig
-	webhookNotifier   *webhook.Notifier
-	webhookSent       map[string]bool // Track if webhook was sent for a service (reset on success)
-	webhookWg         sync.WaitGroup  // Track pending webhook goroutines
-	mu                sync.RWMutex
-	stopWatchChan     chan struct{}
+	services        map[string]*service.Service
+	order           []string // Maintains service order from YAML
+	cronScheduler   *cron.Cron
+	cronEntries     map[string]cron.EntryID // Maps service name to cron entry ID
+	lastModTime     time.Time
+	globalConfig    config.GlobalConfig
+	webhookNotifier *webhook.Notifier
+	webhookSent     map[string]bool // Track if webhook was sent for a service (reset on success)
+	webhookWg       sync.WaitGroup  // Track pending webhook goroutines
+	mu              sync.RWMutex
+	stopWatchChan   chan struct{}
 }
 
 // New creates a new manager
@@ -455,7 +455,7 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 	}
 
 	// Check if we should send webhook
-	maxRetries := m.globalConfig.MaxFailureRetries
+	maxRetries := m.globalConfig.FailureRetries
 	if consecutiveFailures < maxRetries {
 		return // Not enough failures yet
 	}
@@ -468,12 +468,11 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 	// Send webhook
 	if m.webhookNotifier != nil {
 		payload := webhook.FailurePayload{
-			ServiceName:       serviceName,
-			Timestamp:         time.Now(),
-			FailureCount:      consecutiveFailures,
-			LastExitCode:      exitCode,
-			ErrorMessage:      "",
-			ConsecutiveErrors: consecutiveFailures,
+			ServiceName:  serviceName,
+			Timestamp:    time.Now(),
+			FailureCount: consecutiveFailures,
+			LastExitCode: exitCode,
+			ErrorMessage: "",
 		}
 
 		if err != nil {

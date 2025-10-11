@@ -12,7 +12,7 @@ type GlobalConfig struct {
 	Host              string `yaml:"host,omitempty"`
 	Port              int    `yaml:"port,omitempty"`
 	FailureWebhookURL string `yaml:"failure_webhook_url,omitempty"`
-	MaxFailureRetries int    `yaml:"max_failure_retries,omitempty"` // Number of consecutive failures before webhook triggers
+	FailureRetries    int    `yaml:"failure_retries,omitempty"` // Number of consecutive failures before webhook triggers
 }
 
 // ServiceConfig represents a single service configuration
@@ -53,8 +53,8 @@ func Load() (*Config, error) {
 	if cfg.Global.Port == 0 {
 		cfg.Global.Port = 4321
 	}
-	if cfg.Global.MaxFailureRetries == 0 {
-		cfg.Global.MaxFailureRetries = 3 // Default: trigger webhook after 3 consecutive failures
+	if cfg.Global.FailureRetries == 0 {
+		cfg.Global.FailureRetries = 3 // Default: trigger webhook after 3 consecutive failures
 	}
 
 	return &cfg, nil

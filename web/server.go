@@ -41,10 +41,10 @@ func New(mgr *manager.Manager, host string, port int) *Server {
 			host := r.Host
 			portStr := fmt.Sprintf("%d", port)
 			return origin == "http://"+host ||
-			       origin == "https://"+host ||
-			       origin == "http://localhost" ||
-			       origin == "http://localhost:"+portStr ||
-			       origin == "http://127.0.0.1:"+portStr
+				origin == "https://"+host ||
+				origin == "http://localhost" ||
+				origin == "http://localhost:"+portStr ||
+				origin == "http://127.0.0.1:"+portStr
 		},
 	}
 

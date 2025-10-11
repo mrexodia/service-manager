@@ -10,12 +10,11 @@ import (
 
 // FailurePayload represents the webhook payload for service failures
 type FailurePayload struct {
-	ServiceName       string    `json:"service_name"`
-	Timestamp         time.Time `json:"timestamp"`
-	FailureCount      int       `json:"failure_count"`
-	LastExitCode      int       `json:"last_exit_code"`
-	ErrorMessage      string    `json:"error_message,omitempty"`
-	ConsecutiveErrors int       `json:"consecutive_errors"`
+	ServiceName  string    `json:"service_name"`
+	Timestamp    time.Time `json:"timestamp"`
+	FailureCount int       `json:"failure_count"`
+	LastExitCode int       `json:"last_exit_code"`
+	ErrorMessage string    `json:"error_message,omitempty"`
 }
 
 // Notifier handles webhook notifications
