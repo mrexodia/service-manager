@@ -56,7 +56,10 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 			if state, exists := m.services[name]; exists {
 				fmt.Printf("[Manager]     Stopping: %s\n", name)
 				m.unscheduleService(name)
-				state.Stop()
+				// Only call Stop if the service is actually running
+				if state.IsRunning() {
+					state.Stop()
+				}
 				delete(m.services, name)
 			}
 		}

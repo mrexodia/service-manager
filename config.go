@@ -28,7 +28,7 @@ type GlobalConfig struct {
 type ServiceConfig struct {
 	Name     string            `yaml:"name"`
 	Command  string            `yaml:"command"`
-	Args     []string          `yaml:"args,omitempty"`
+	Args     []string          `yaml:"args,omitempty,flow"`
 	Workdir  string            `yaml:"workdir,omitempty"`
 	Env      map[string]string `yaml:"env,omitempty"`
 	Enabled  *bool             `yaml:"enabled,omitempty"`  // nil means true for backwards compatibility
@@ -51,7 +51,7 @@ func (sc *ServiceConfig) IsScheduled() bool {
 // RootConfig wraps both global config and services in services.yaml
 type RootConfig struct {
 	GlobalConfig `yaml:",inline"` // Embed global config at top level
-	Services     []ServiceConfig `yaml:"services"`
+	Services     []ServiceConfig  `yaml:"services"`
 }
 
 // LoadGlobalConfig loads the global configuration from services.yaml
@@ -239,6 +239,8 @@ func (cm *ConfigManager) reloadAndNotify(listener ConfigListener) error {
 	}
 
 	// Compare and calculate changes
+	// Note: cm.services is NOT modified by API methods, only by this watcher
+	// So it correctly represents the OLD state before the file change
 	toKill := calculateServicesToKill(cm.services, rootConfig.Services)
 
 	// Update internal state
@@ -307,10 +309,11 @@ func (cm *ConfigManager) AddService(config ServiceConfig) error {
 		}
 	}
 
-	cm.services = append(cm.services, config)
+	// Create a copy of services and add to the copy (don't touch cm.services)
+	modifiedServices := cm.copyServices()
+	modifiedServices = append(modifiedServices, config)
 
-	if err := cm.saveToDisk(); err != nil {
-		cm.services = cm.services[:len(cm.services)-1] // rollback
+	if err := cm.saveToDisk(modifiedServices); err != nil {
 		cm.mu.Unlock()
 		return err
 	}
@@ -349,11 +352,11 @@ func (cm *ConfigManager) UpdateService(name string, config ServiceConfig) error 
 		}
 	}
 
-	oldConfig := cm.services[index]
-	cm.services[index] = config
+	// Create a copy of services and modify the copy (don't touch cm.services)
+	modifiedServices := cm.copyServices()
+	modifiedServices[index] = config
 
-	if err := cm.saveToDisk(); err != nil {
-		cm.services[index] = oldConfig // rollback
+	if err := cm.saveToDisk(modifiedServices); err != nil {
 		cm.mu.Unlock()
 		return err
 	}
@@ -380,10 +383,11 @@ func (cm *ConfigManager) DeleteService(name string) error {
 		return fmt.Errorf("service %s not found", name)
 	}
 
-	cm.services = append(cm.services[:index], cm.services[index+1:]...)
+	// Create a copy of services and delete from the copy (don't touch cm.services)
+	modifiedServices := cm.copyServices()
+	modifiedServices = append(modifiedServices[:index], modifiedServices[index+1:]...)
 
-	if err := cm.saveToDisk(); err != nil {
-		cm.loadFromDiskLocked() // rollback
+	if err := cm.saveToDisk(modifiedServices); err != nil {
 		cm.mu.Unlock()
 		return err
 	}
@@ -410,11 +414,12 @@ func (cm *ConfigManager) SetServiceEnabled(name string, enabled bool) error {
 		return fmt.Errorf("service %s not found", name)
 	}
 
-	oldEnabled := cm.services[index].Enabled
-	cm.services[index].Enabled = &enabled
+	// Create a copy of services and modify the copy (don't touch cm.services)
+	// This allows the watcher to detect the change by comparing old (cm.services) vs new (from disk)
+	modifiedServices := cm.copyServices()
+	modifiedServices[index].Enabled = &enabled
 
-	if err := cm.saveToDisk(); err != nil {
-		cm.services[index].Enabled = oldEnabled // rollback
+	if err := cm.saveToDisk(modifiedServices); err != nil {
 		cm.mu.Unlock()
 		return err
 	}
@@ -478,8 +483,7 @@ func (cm *ConfigManager) loadFromDisk() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Create empty services file
-			cm.services = make([]ServiceConfig, 0)
-			return cm.saveToDisk()
+			return cm.saveToDisk(make([]ServiceConfig, 0))
 		}
 		return err
 	}
@@ -507,36 +511,9 @@ func (cm *ConfigManager) loadFromDisk() error {
 	return nil
 }
 
-func (cm *ConfigManager) loadFromDiskLocked() error {
-	fileInfo, err := os.Stat(cm.yamlPath)
-	if err != nil {
-		return err
-	}
-
-	data, err := os.ReadFile(cm.yamlPath)
-	if err != nil {
-		return err
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-
-	var rootConfig RootConfig
-	if err := yaml.Unmarshal(data, &rootConfig); err != nil {
-		return err
-	}
-
-	cm.yamlRoot = &root
-	cm.services = rootConfig.Services
-	cm.lastModTime = fileInfo.ModTime()
-	cm.lastChecksum, _ = cm.fileChecksum()
-
-	return nil
-}
-
-func (cm *ConfigManager) saveToDisk() error {
+// saveToDisk saves the given services to disk
+// Caller must hold the lock
+func (cm *ConfigManager) saveToDisk(servicesToSave []ServiceConfig) error {
 	// Read existing file to preserve global config
 	existingData, err := os.ReadFile(cm.yamlPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -552,7 +529,7 @@ func (cm *ConfigManager) saveToDisk() error {
 	}
 
 	// Update only the services part
-	rootConfig.Services = cm.services
+	rootConfig.Services = servicesToSave
 
 	// Encode to YAML
 	data, err := yaml.Marshal(rootConfig)
