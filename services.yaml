@@ -5,27 +5,21 @@ authorization: password
 services:
     - name: ping-example
       command: ping
-      args:
-        - localhost
-        - -t
+      args: [localhost, -t]
       enabled: false
     - name: timestamp-example
       command: powershell
-      args:
-        - -Command
-        - while($true) { Get-Date; Start-Sleep -Seconds 5 }
+      args: [-Command, 'while($true) { Get-Date; Start-Sleep -Seconds 5 }']
       env:
-        EXAMPLE_VAR: hello
-      enabled: true
+        EXAMPLE_VAR: hello23
+      enabled: false
     - name: hourly-cleanup
       command: cmd
-      args:
-        - /c
-        - echo Cleaning up at %DATE% %TIME%
+      args: [/c, echo Cleaning up at %DATE% %TIME%]
       enabled: true
       schedule: '*/5 * * * *'
     - name: one-off
       command: uv
-      args:
-        - --help
+      args: [--help]
       workdir: C:\
+      enabled: true

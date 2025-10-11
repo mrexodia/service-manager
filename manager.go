@@ -49,12 +49,22 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Step 1: Kill services that need to be stopped
+	// Step 1: Track old configs and runtime state before we make any changes
+	oldConfigs := make(map[string]ServiceConfig)
+	wasRunning := make(map[string]bool)
+	for _, name := range toKill {
+		if state, exists := m.services[name]; exists {
+			oldConfigs[name] = state.Config
+			wasRunning[name] = state.IsRunning()
+		}
+	}
+
+	// Step 2: Kill services that need to be stopped
 	if len(toKill) > 0 {
 		fmt.Printf("[Manager]   ToKill: %v\n", toKill)
 		for _, name := range toKill {
 			if state, exists := m.services[name]; exists {
-				fmt.Printf("[Manager]     Stopping: %s\n", name)
+				fmt.Printf("[Manager]     Stopping: %s (was running: %v)\n", name, wasRunning[name])
 				m.unscheduleService(name)
 				// Only call Stop if the service is actually running
 				if state.IsRunning() {
@@ -65,7 +75,7 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 		}
 	}
 
-	// Step 2: Build new service map and order
+	// Step 3: Build new service map and order
 	newServiceMap := make(map[string]ServiceConfig)
 	newOrder := make([]string, 0, len(services))
 	for _, svc := range services {
@@ -73,7 +83,7 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 		newOrder = append(newOrder, svc.Name)
 	}
 
-	// Step 3: Remove services no longer in config
+	// Step 4: Remove services no longer in config
 	for name := range m.services {
 		if _, exists := newServiceMap[name]; !exists {
 			fmt.Printf("[Manager]   Removing: %s (no longer in config)\n", name)
@@ -83,20 +93,55 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 		}
 	}
 
-	// Step 4: Create or update services
+	// Step 5: Create or update services
 	newCount := 0
 	for _, svc := range services {
 		state, exists := m.services[svc.Name]
 
 		if !exists {
-			// New service
+			// Service not in map - could be new, or recreated after config change
 			newCount++
 			state = NewService(svc)
 			state.SetFailureCallback(m.handleServiceFailure)
 			m.services[svc.Name] = state
 
-			// Start if enabled
-			if svc.IsEnabled() {
+			// Determine if we should start the service
+			var shouldStart bool
+			var reason string
+
+			if oldConfig, wasKilled := oldConfigs[svc.Name]; wasKilled {
+				// Service was killed due to config change - check what changed
+				oldEnabled := oldConfig.IsEnabled()
+				newEnabled := svc.IsEnabled()
+
+				if !oldEnabled && newEnabled {
+					// Enabling a disabled service → force start
+					shouldStart = true
+					reason = "enabled"
+				} else if oldEnabled && !newEnabled {
+					// Disabling an enabled service → don't start
+					shouldStart = false
+					reason = "disabled"
+				} else {
+					// Enabled flag didn't change → preserve runtime state
+					shouldStart = wasRunning[svc.Name] && newEnabled
+					if wasRunning[svc.Name] {
+						reason = "was running"
+					} else {
+						reason = "was stopped"
+					}
+				}
+
+				fmt.Printf("[Manager]     Recreating: %s (enabled: %v, %s)\n",
+					svc.Name, newEnabled, reason)
+			} else {
+				// Truly new service → start if enabled
+				shouldStart = svc.IsEnabled()
+				reason = "new service"
+				fmt.Printf("[Manager]     Creating new: %s (enabled: %v)\n", svc.Name, svc.IsEnabled())
+			}
+
+			if shouldStart {
 				if svc.IsScheduled() {
 					if err := m.scheduleService(svc.Name, state); err != nil {
 						fmt.Printf("[Manager]     Failed to schedule %s: %v\n", svc.Name, err)
@@ -110,6 +155,8 @@ func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []st
 						fmt.Printf("[Manager]     Started: %s\n", svc.Name)
 					}
 				}
+			} else {
+				fmt.Printf("[Manager]     Not starting: %s (%s)\n", svc.Name, reason)
 			}
 		} else {
 			// Existing service - just update config reference
