@@ -9,167 +9,130 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// Manager manages all services
-type Manager struct {
+// ServiceManager manages all services and implements ConfigListener
+type ServiceManager struct {
 	services        map[string]*Service
 	order           []string // Maintains service order from YAML
 	cronScheduler   *cron.Cron
 	cronEntries     map[string]cron.EntryID // Maps service name to cron entry ID
-	lastModTime     time.Time
 	globalConfig    GlobalConfig
 	webhookNotifier *Notifier
 	webhookSent     map[string]bool // Track if webhook was sent for a service (reset on success)
 	webhookWg       sync.WaitGroup  // Track pending webhook goroutines
 	mu              sync.RWMutex
-	stopWatchChan   chan struct{}
 }
 
 // New creates a new manager
-func NewManager() *Manager {
+func NewServiceManager(globalConfig GlobalConfig) *ServiceManager {
 	cronScheduler := cron.New()
 	cronScheduler.Start()
 
-	return &Manager{
-		services:      make(map[string]*Service),
-		order:         make([]string, 0),
-		cronScheduler: cronScheduler,
-		cronEntries:   make(map[string]cron.EntryID),
-		webhookSent:   make(map[string]bool),
-		stopWatchChan: make(chan struct{}),
+	return &ServiceManager{
+		services:        make(map[string]*Service),
+		order:           make([]string, 0),
+		cronScheduler:   cronScheduler,
+		cronEntries:     make(map[string]cron.EntryID),
+		webhookSent:     make(map[string]bool),
+		globalConfig:    globalConfig,
+		webhookNotifier: NewNotifier(globalConfig.FailureWebhookURL),
 	}
 }
 
-// LoadConfig loads services from configuration and starts them
-func (m *Manager) LoadConfig(cfg *Config) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// ============================================================================
+// ConfigListener Interface Implementation
+// ============================================================================
 
-	// Store global config and create webhook notifier
-	m.globalConfig = cfg.Global
-	m.webhookNotifier = NewNotifier(cfg.Global.FailureWebhookURL)
-
-	// Record the modification time
-	if info, err := os.Stat("services.yaml"); err == nil {
-		m.lastModTime = info.ModTime()
-	}
-
-	for _, svcCfg := range cfg.Services {
-		svc := NewService(svcCfg)
-		m.services[svcCfg.Name] = svc
-		m.order = append(m.order, svcCfg.Name)
-
-		// Set failure callback
-		svc.SetFailureCallback(m.handleServiceFailure)
-
-		if !svcCfg.IsEnabled() {
-			continue
-		}
-
-		// Scheduled services use cron
-		if svcCfg.IsScheduled() {
-			if err := m.scheduleService(svcCfg.Name, svc); err != nil {
-				fmt.Printf("Warning: Failed to schedule service %s: %v\n", svcCfg.Name, err)
-			}
-		} else {
-			// Continuous services start immediately
-			if err := svc.Start(); err != nil {
-				fmt.Printf("Warning: Failed to start service %s: %v\n", svcCfg.Name, err)
-			}
-		}
-	}
-
-	return nil
-}
-
-// ReloadConfig reloads the configuration and updates services
-func (m *Manager) ReloadConfig() error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
-	}
+// OnServicesUpdated implements ConfigListener - called when services configuration changes
+func (m *ServiceManager) OnServicesUpdated(services []ServiceConfig, toKill []string) {
+	fmt.Printf("[Manager] Services updated\n")
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Update global config and webhook notifier
-	m.globalConfig = cfg.Global
-	m.webhookNotifier = NewNotifier(cfg.Global.FailureWebhookURL)
-
-	// Build a map of new services
-	newServices := make(map[string]ServiceConfig)
-	newOrder := make([]string, 0, len(cfg.Services))
-	for _, svcCfg := range cfg.Services {
-		newServices[svcCfg.Name] = svcCfg
-		newOrder = append(newOrder, svcCfg.Name)
+	// Step 1: Kill services that need to be stopped
+	if len(toKill) > 0 {
+		fmt.Printf("[Manager]   ToKill: %v\n", toKill)
+		for _, name := range toKill {
+			if state, exists := m.services[name]; exists {
+				fmt.Printf("[Manager]     Stopping: %s\n", name)
+				m.unscheduleService(name)
+				state.Stop()
+				delete(m.services, name)
+			}
+		}
 	}
 
-	// Stop and remove services that are no longer in the config
-	for name, svc := range m.services {
-		if _, exists := newServices[name]; !exists {
-			m.unscheduleService(name) // Remove from cron if scheduled
-			svc.Stop()
+	// Step 2: Build new service map and order
+	newServiceMap := make(map[string]ServiceConfig)
+	newOrder := make([]string, 0, len(services))
+	for _, svc := range services {
+		newServiceMap[svc.Name] = svc
+		newOrder = append(newOrder, svc.Name)
+	}
+
+	// Step 3: Remove services no longer in config
+	for name := range m.services {
+		if _, exists := newServiceMap[name]; !exists {
+			fmt.Printf("[Manager]   Removing: %s (no longer in config)\n", name)
+			m.unscheduleService(name)
+			m.services[name].Stop()
 			delete(m.services, name)
 		}
 	}
 
-	// Add or update services (iterate over newOrder to preserve order)
-	for _, name := range newOrder {
-		svcCfg := newServices[name]
-		if existing, exists := m.services[name]; exists {
-			// Service exists, check if config changed
-			if !configEqual(existing.Config, svcCfg) {
-				// Config changed, stop existing and create new
-				m.unscheduleService(name)
-				existing.Stop()
-				newSvc := NewService(svcCfg)
-				newSvc.SetFailureCallback(m.handleServiceFailure)
-				m.services[name] = newSvc
+	// Step 4: Create or update services
+	newCount := 0
+	for _, svc := range services {
+		state, exists := m.services[svc.Name]
 
-				if svcCfg.IsEnabled() {
-					if svcCfg.IsScheduled() {
-						if err := m.scheduleService(name, newSvc); err != nil {
-							fmt.Printf("Warning: Failed to schedule service %s: %v\n", name, err)
-						}
+		if !exists {
+			// New service
+			newCount++
+			state = NewService(svc)
+			state.SetFailureCallback(m.handleServiceFailure)
+			m.services[svc.Name] = state
+
+			// Start if enabled
+			if svc.IsEnabled() {
+				if svc.IsScheduled() {
+					if err := m.scheduleService(svc.Name, state); err != nil {
+						fmt.Printf("[Manager]     Failed to schedule %s: %v\n", svc.Name, err)
 					} else {
-						if err := newSvc.Start(); err != nil {
-							fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
-						}
+						fmt.Printf("[Manager]     Scheduled: %s (%s)\n", svc.Name, svc.Schedule)
+					}
+				} else {
+					if err := state.Start(); err != nil {
+						fmt.Printf("[Manager]     Failed to start %s: %v\n", svc.Name, err)
+					} else {
+						fmt.Printf("[Manager]     Started: %s\n", svc.Name)
 					}
 				}
 			}
 		} else {
-			// New service
-			svc := NewService(svcCfg)
-			svc.SetFailureCallback(m.handleServiceFailure)
-			m.services[name] = svc
-
-			if svcCfg.IsEnabled() {
-				if svcCfg.IsScheduled() {
-					if err := m.scheduleService(name, svc); err != nil {
-						fmt.Printf("Warning: Failed to schedule service %s: %v\n", name, err)
-					}
-				} else {
-					if err := svc.Start(); err != nil {
-						fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
-					}
-				}
-			}
+			// Existing service - just update config reference
+			state.Config = svc
 		}
 	}
 
 	// Update order
 	m.order = newOrder
 
-	// Update modification time
-	if info, err := os.Stat("services.yaml"); err == nil {
-		m.lastModTime = info.ModTime()
+	if newCount > 0 {
+		fmt.Printf("[Manager]   Created: %d new services\n", newCount)
 	}
 
-	return nil
+	fmt.Printf("[Manager] Update complete. Total services: %d\n", len(m.services))
+}
+
+// GetGlobalConfig returns the global configuration
+func (m *ServiceManager) GetGlobalConfig() GlobalConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.globalConfig
 }
 
 // GetService returns a service by name
-func (m *Manager) GetService(name string) (*Service, error) {
+func (m *ServiceManager) GetService(name string) (*Service, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -181,15 +144,8 @@ func (m *Manager) GetService(name string) (*Service, error) {
 	return svc, nil
 }
 
-// GetGlobalConfig returns the global configuration
-func (m *Manager) GetGlobalConfig() GlobalConfig {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.globalConfig
-}
-
 // GetAllServices returns all services in YAML order
-func (m *Manager) GetAllServices() []*Service {
+func (m *ServiceManager) GetAllServices() []*Service {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -203,40 +159,8 @@ func (m *Manager) GetAllServices() []*Service {
 	return services
 }
 
-// EnableService sets a service as enabled in YAML
-func (m *Manager) EnableService(name string) error {
-	// Verify service exists
-	if _, err := m.GetService(name); err != nil {
-		return err
-	}
-
-	// Update enabled flag in YAML
-	if err := SetServiceEnabledConfig(name, true); err != nil {
-		return fmt.Errorf("failed to update enabled flag: %w", err)
-	}
-
-	// Reload config to apply changes
-	return m.ReloadConfig()
-}
-
-// DisableService sets a service as disabled in YAML
-func (m *Manager) DisableService(name string) error {
-	// Verify service exists
-	if _, err := m.GetService(name); err != nil {
-		return err
-	}
-
-	// Update enabled flag in YAML
-	if err := SetServiceEnabledConfig(name, false); err != nil {
-		return fmt.Errorf("failed to update enabled flag: %w", err)
-	}
-
-	// Reload config to apply changes (this will stop the service if running)
-	return m.ReloadConfig()
-}
-
 // StartService starts a service by name (runtime control only)
-func (m *Manager) StartService(name string) error {
+func (m *ServiceManager) StartService(name string) error {
 	svc, err := m.GetService(name)
 	if err != nil {
 		return err
@@ -246,7 +170,7 @@ func (m *Manager) StartService(name string) error {
 }
 
 // StopService stops a service by name (runtime control only)
-func (m *Manager) StopService(name string) error {
+func (m *ServiceManager) StopService(name string) error {
 	svc, err := m.GetService(name)
 	if err != nil {
 		return err
@@ -256,7 +180,7 @@ func (m *Manager) StopService(name string) error {
 }
 
 // RestartService restarts a service by name
-func (m *Manager) RestartService(name string) error {
+func (m *ServiceManager) RestartService(name string) error {
 	svc, err := m.GetService(name)
 	if err != nil {
 		return err
@@ -265,99 +189,8 @@ func (m *Manager) RestartService(name string) error {
 	return svc.Restart()
 }
 
-// CreateService creates a new service and adds it to the config
-func (m *Manager) CreateService(cfg ServiceConfig) error {
-	// Check if service already exists
-	m.mu.RLock()
-	if _, exists := m.services[cfg.Name]; exists {
-		m.mu.RUnlock()
-		return fmt.Errorf("service %s already exists", cfg.Name)
-	}
-	m.mu.RUnlock()
-
-	// Add to YAML file
-	if err := AddServiceConfig(cfg); err != nil {
-		return fmt.Errorf("failed to add service to config: %w", err)
-	}
-
-	// Reload config
-	return m.ReloadConfig()
-}
-
-// UpdateService updates an existing service in the config
-func (m *Manager) UpdateService(name string, cfg ServiceConfig) error {
-	// Check if service exists
-	m.mu.RLock()
-	if _, exists := m.services[name]; !exists {
-		m.mu.RUnlock()
-		return fmt.Errorf("service %s not found", name)
-	}
-	m.mu.RUnlock()
-
-	// Update YAML file
-	if err := UpdateServiceConfig(name, cfg); err != nil {
-		return fmt.Errorf("failed to update service in config: %w", err)
-	}
-
-	// Reload config
-	return m.ReloadConfig()
-}
-
-// DeleteService deletes a service from the config
-func (m *Manager) DeleteService(name string) error {
-	// Check if service exists
-	m.mu.RLock()
-	if _, exists := m.services[name]; !exists {
-		m.mu.RUnlock()
-		return fmt.Errorf("service %s not found", name)
-	}
-	m.mu.RUnlock()
-
-	// Delete from YAML file
-	if err := DeleteServiceConfig(name); err != nil {
-		return fmt.Errorf("failed to delete service from config: %w", err)
-	}
-
-	// Reload config
-	return m.ReloadConfig()
-}
-
-// StartConfigWatch starts watching the config file for changes
-func (m *Manager) StartConfigWatch() {
-	ticker := time.NewTicker(5 * time.Second)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				// Check if file was modified
-				info, err := os.Stat("services.yaml")
-				if err != nil {
-					continue
-				}
-
-				m.mu.RLock()
-				lastMod := m.lastModTime
-				m.mu.RUnlock()
-
-				if info.ModTime().After(lastMod) {
-					fmt.Println("Config file changed, reloading...")
-					if err := m.ReloadConfig(); err != nil {
-						fmt.Printf("Error reloading config: %v\n", err)
-					} else {
-						fmt.Println("Config reloaded successfully")
-					}
-				}
-
-			case <-m.stopWatchChan:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
-
 // scheduleService adds a service to the cron scheduler
-func (m *Manager) scheduleService(name string, svc *Service) error {
+func (m *ServiceManager) scheduleService(name string, svc *Service) error {
 	// Remove existing schedule if any
 	m.unscheduleService(name)
 
@@ -386,7 +219,7 @@ func (m *Manager) scheduleService(name string, svc *Service) error {
 }
 
 // unscheduleService removes a service from the cron scheduler
-func (m *Manager) unscheduleService(name string) {
+func (m *ServiceManager) unscheduleService(name string) {
 	if entryID, exists := m.cronEntries[name]; exists {
 		m.cronScheduler.Remove(entryID)
 		delete(m.cronEntries, name)
@@ -394,7 +227,7 @@ func (m *Manager) unscheduleService(name string) {
 }
 
 // GetNextRunTime returns the next scheduled run time for a service
-func (m *Manager) GetNextRunTime(name string) (time.Time, bool) {
+func (m *ServiceManager) GetNextRunTime(name string) (time.Time, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -407,11 +240,8 @@ func (m *Manager) GetNextRunTime(name string) (time.Time, bool) {
 	return entry.Next, true
 }
 
-// StopAll stops all services, the cron scheduler, and the config watcher
-func (m *Manager) StopAll() {
-	// Stop config watcher
-	close(m.stopWatchChan)
-
+// StopAll stops all services and the cron scheduler
+func (m *ServiceManager) StopAll() {
 	// Stop cron scheduler
 	ctx := m.cronScheduler.Stop()
 	<-ctx.Done()
@@ -441,7 +271,7 @@ func (m *Manager) StopAll() {
 
 // handleServiceFailure is called when a service fails or succeeds (to reset state)
 // Note: This callback is triggered on every service exit, not just failures
-func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures int, exitCode int, err error) {
+func (m *ServiceManager) handleServiceFailure(serviceName string, consecutiveFailures int, exitCode int, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -489,41 +319,4 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 		// Mark that we sent webhook for this service
 		m.webhookSent[serviceName] = true
 	}
-}
-
-// configEqual compares two service configs for equality
-func configEqual(a, b ServiceConfig) bool {
-	if a.Name != b.Name || a.Command != b.Command || a.Workdir != b.Workdir {
-		return false
-	}
-
-	// Check enabled flag
-	if a.IsEnabled() != b.IsEnabled() {
-		return false
-	}
-
-	// Check schedule
-	if a.Schedule != b.Schedule {
-		return false
-	}
-
-	if len(a.Args) != len(b.Args) {
-		return false
-	}
-	for i := range a.Args {
-		if a.Args[i] != b.Args[i] {
-			return false
-		}
-	}
-
-	if len(a.Env) != len(b.Env) {
-		return false
-	}
-	for k, v := range a.Env {
-		if b.Env[k] != v {
-			return false
-		}
-	}
-
-	return true
 }

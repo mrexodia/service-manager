@@ -11,35 +11,37 @@ import (
 
 // Server represents the web server
 type Server struct {
-	manager  *Manager
-	host     string
-	port     int
-	upgrader websocket.Upgrader
-	username string // BasicAuth username (empty = no username required)
-	password string // BasicAuth password (empty = no auth)
+	serviceManager *ServiceManager
+	configManager  *ConfigManager
+	host           string
+	port           int
+	upgrader       websocket.Upgrader
+	username       string // BasicAuth username (empty = no username required)
+	password       string // BasicAuth password (empty = no auth)
 }
 
 // New creates a new web server
-func NewServer(mgr *Manager) *Server {
+func NewServer(serviceManager *ServiceManager, configManager *ConfigManager) *Server {
 	// Parse authorization config once
 	var username, password string
-	cfg := mgr.GetGlobalConfig()
-	if cfg.Authorization != "" {
-		if idx := strings.Index(cfg.Authorization, ":"); idx > 0 {
-			username = cfg.Authorization[:idx]
-			password = cfg.Authorization[idx+1:]
+	config := serviceManager.GetGlobalConfig()
+	if config.Authorization != "" {
+		if idx := strings.Index(config.Authorization, ":"); idx > 0 {
+			username = config.Authorization[:idx]
+			password = config.Authorization[idx+1:]
 		} else {
-			password = cfg.Authorization
+			password = config.Authorization
 		}
 	}
 
 	return &Server{
-		manager:  mgr,
-		host:     cfg.Host,
-		port:     cfg.Port,
-		upgrader: websocket.Upgrader{},
-		username: username,
-		password: password,
+		serviceManager: serviceManager,
+		configManager:  configManager,
+		host:           config.Host,
+		port:           config.Port,
+		upgrader:       websocket.Upgrader{},
+		username:       username,
+		password:       password,
 	}
 }
 
@@ -97,7 +99,7 @@ func (s *Server) Start() error {
 
 // listServices returns all services with their status
 func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
-	services := s.manager.GetAllServices()
+	services := s.serviceManager.GetAllServices()
 
 	statuses := make([]interface{}, len(services))
 	for i, svc := range services {
@@ -117,7 +119,7 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 
 		// Add next run time for scheduled services
 		if svc.Config.IsScheduled() {
-			if nextRun, ok := s.manager.GetNextRunTime(status.Name); ok {
+			if nextRun, ok := s.serviceManager.GetNextRunTime(status.Name); ok {
 				item["nextRunTime"] = nextRun
 			}
 		}
@@ -132,7 +134,7 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 // getService returns a specific service with config and status
 func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	svc, err := s.manager.GetService(name)
+	svc, err := s.serviceManager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -158,7 +160,7 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 
 	// Add next run time for scheduled services
 	if svc.Config.IsScheduled() {
-		if nextRun, ok := s.manager.GetNextRunTime(svc.Config.Name); ok {
+		if nextRun, ok := s.serviceManager.GetNextRunTime(svc.Config.Name); ok {
 			response["nextRunTime"] = nextRun
 		}
 	}
@@ -180,7 +182,7 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.manager.CreateService(cfg); err != nil {
+	if err := s.configManager.AddService(cfg); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			http.Error(w, err.Error(), http.StatusConflict)
 		} else {
@@ -210,7 +212,7 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 	// Ensure name matches URL
 	cfg.Name = name
 
-	if err := s.manager.UpdateService(name, cfg); err != nil {
+	if err := s.configManager.UpdateService(name, cfg); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
@@ -226,7 +228,7 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 // deleteService deletes a service
 func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.DeleteService(name); err != nil {
+	if err := s.configManager.DeleteService(name); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
@@ -242,7 +244,7 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 // startService starts a service
 func (s *Server) startService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.StartService(name); err != nil {
+	if err := s.serviceManager.StartService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -254,7 +256,7 @@ func (s *Server) startService(w http.ResponseWriter, r *http.Request) {
 // stopService stops a service
 func (s *Server) stopService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.StopService(name); err != nil {
+	if err := s.serviceManager.StopService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -266,7 +268,7 @@ func (s *Server) stopService(w http.ResponseWriter, r *http.Request) {
 // restartService restarts a service
 func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.RestartService(name); err != nil {
+	if err := s.serviceManager.RestartService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -278,7 +280,7 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
 // enableService enables a service
 func (s *Server) enableService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.EnableService(name); err != nil {
+	if err := s.configManager.SetServiceEnabled(name, true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -290,7 +292,7 @@ func (s *Server) enableService(w http.ResponseWriter, r *http.Request) {
 // disableService disables a service
 func (s *Server) disableService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.manager.DisableService(name); err != nil {
+	if err := s.configManager.SetServiceEnabled(name, false); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -302,7 +304,7 @@ func (s *Server) disableService(w http.ResponseWriter, r *http.Request) {
 // runNowService runs a scheduled service immediately
 func (s *Server) runNowService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	svc, err := s.manager.GetService(name)
+	svc, err := s.serviceManager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -340,7 +342,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := s.manager.GetService(name)
+	svc, err := s.serviceManager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

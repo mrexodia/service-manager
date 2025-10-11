@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,33 +11,30 @@ import (
 func main() {
 	fmt.Println("Starting Service Manager...")
 
-	// Load configuration
-	cfg, err := LoadConfig()
+	// Load global configuration from config.yaml
+	globalConfig, err := LoadGlobalConfig("services.yaml")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
-		fmt.Println("Creating empty services.yaml file...")
-		if err := createEmptyConfig(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create services.yaml: %v\n", err)
-			os.Exit(1)
-		}
-		cfg = &Config{Services: []ServiceConfig{}}
-	}
-
-	// Create service manager
-	mgr := NewManager()
-
-	// Load and start services
-	if err := mgr.LoadConfig(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load services: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to load global config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Start watching for config file changes
-	mgr.StartConfigWatch()
+	// Create service manager (implements ConfigListener)
+	serviceManager := NewServiceManager(globalConfig)
+
+	// Create config manager for services
+	configManager := NewConfigManager("services.yaml")
+
+	// Start watching for config file changes (loads initial config, emits initial state, and watches for changes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := configManager.StartWatching(ctx, serviceManager); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start config watcher: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Println("Watching services.yaml for changes...")
 
 	// Start web server with configured host/port
-	server := NewServer(mgr)
+	server := NewServer(serviceManager, configManager)
 
 	// Channel to signal web server errors
 	serverErrChan := make(chan error, 1)
@@ -59,22 +57,8 @@ func main() {
 	}
 
 	// Perform graceful shutdown
-	mgr.StopAll()
+	cancel() // Stop config watcher
+	configManager.Stop()
+	serviceManager.StopAll()
 	fmt.Println("Service Manager stopped")
-}
-
-func createEmptyConfig() error {
-	content := `# Service Manager Configuration
-# Define your services below
-
-config:
-  host: "127.0.0.1"
-  port: 4321
-  failure_webhook_url: ""
-  failure_retries: 3
-  authorization: "Password@123"
-
-services: []
-`
-	return os.WriteFile("services.yaml", []byte(content), 0644)
 }

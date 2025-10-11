@@ -29,33 +29,62 @@ A simple service manager written in Go that manages multiple services defined in
 
 All components are implemented in the `main` package in the root directory for simplicity.
 
+### Event-Based Architecture
+
+The system uses an **event-based architecture** where ConfigManager is the **single source of truth** for detecting changes and notifying listeners. This ensures consistent behavior whether changes come from external file edits or API calls.
+
+#### Key Principles:
+1. **ConfigManager** watches `services.yaml` and is the only component that detects changes
+2. **ServiceManager** implements the `ConfigListener` interface and reacts to configuration events
+3. **Both paths converge**: API changes save to disk → trigger reload → emit event
+4. **Global config immutable**: Loaded once at startup, not watched for runtime changes (requires restart)
+
+### Event Flow
+
+**External File Edit:**
+```
+User edits services.yaml → Watcher detects (modtime + checksum) → reloadAndNotify()
+→ OnServicesUpdated(services, toKill) → ServiceManager handles event
+```
+
+**API Call:**
+```
+configMgr.AddService() → Saves to disk → Triggers reload → reloadAndNotify()
+→ OnServicesUpdated(services, toKill) → ServiceManager handles event
+```
+
 ### Components
 
-#### 1. Configuration Loader (`config.go`)
-- Reads `services.yaml` from the current directory
-- Parses global config and service definitions with comment preservation (using yaml.v3 Node API)
-- Validates configuration
-- Updates YAML file when services are created/edited while preserving comments
-- Provides `SetServiceEnabled()` to update the enabled flag in YAML
-- `IsEnabled()` helper returns true if enabled field is nil or true (backwards compatibility)
-- Supports global configuration: host, port, failure_webhook_url, failure_retries, authorization
+#### 1. Configuration Manager (`config.go`)
+- **Single source of truth** for configuration changes
+- Loads global config and services from `services.yaml` (RootConfig structure)
+- `LoadGlobalConfig()`: Loads global config once at startup (immutable at runtime)
+- `NewConfigManager()`: Creates manager without listener (listener passed to StartWatching)
+- `StartWatching()`: Loads initial config, emits initial state, starts background watcher
+- **Only the watcher emits events** via `OnServicesUpdated()` callback
+- API methods (`AddService`, `UpdateService`, `DeleteService`, `SetServiceEnabled`) only save to disk
+- After saving, they trigger reload via channel → watcher handles notification
+- Uses polling (5s interval) + checksum verification to detect external changes
+- Uses cooldown (2s) to avoid excessive reloads
+- Preserves global config fields when saving service changes
+- `RootConfig` struct handles combined format (global fields + services array)
 
 #### 2. Service Manager (`manager.go`)
-- Core orchestration component
+- Implements `ConfigListener` interface
+- **Reacts to configuration events**, doesn't initiate config loading
 - Maintains map of service name → service instance
 - Maintains service order as defined in YAML (preserves insertion order)
-- Starts enabled services on initialization (continuous or schedules cron jobs)
+- `OnServicesUpdated(services, toKill)`: Handles configuration change events
+  - Stops services in `toKill` list
+  - Removes services no longer in config
+  - Creates/updates services based on new config
+- Initialized with global config (passed to constructor, immutable)
 - Handles service lifecycle (start, stop, restart)
 - Monitors continuous service processes and auto-restarts on crash
 - Manages cron scheduler for scheduled services
-- Watches config file for changes (5-second polling interval)
-- Automatically reloads config when `services.yaml` is modified
-- Tracks file modification time to avoid unnecessary reloads
 - Integrates webhook notifier for service failure notifications
-- `StartService()` sets `enabled=true` in YAML and starts the process (or registers cron)
-- `StopService()` sets `enabled=false` in YAML and stops the process (or unregisters cron)
-- `RestartService()` restarts without changing enabled state (continuous only)
-- `RunNow()` immediately runs a scheduled service (409 Conflict if already running)
+- `StartService()`, `StopService()`, `RestartService()`: Runtime control only (don't modify YAML)
+- Services are enabled/disabled via ConfigManager API, which triggers config reload
 
 #### 3. Service Instance (`service.go`)
 - Represents a single managed service
@@ -111,14 +140,15 @@ All components are implemented in the `main` package in the root directory for s
 
 ## YAML Configuration Format
 
+All configuration is in a single `services.yaml` file with global config at the top level and services in a `services:` array.
+
 ```yaml
-# Global configuration (all fields optional)
-config:
-  host: "127.0.0.1"                      # Web UI bind address (default: 127.0.0.1)
-  port: 4321                             # Web UI port (default: 4321)
-  failure_webhook_url: ""                # Webhook URL for failure notifications (empty = disabled)
-  failure_retries: 3                     # Consecutive failures before webhook triggers (default: 3)
-  authorization: "username:password"     # HTTP Basic Auth for API (empty = disabled)
+# Global configuration (all fields optional, at top level)
+host: "127.0.0.1"                      # Web UI bind address (default: 127.0.0.1)
+port: 4321                             # Web UI port (default: 4321)
+failure_webhook_url: ""                # Webhook URL for failure notifications (empty = disabled)
+failure_retries: 3                     # Consecutive failures before webhook triggers (default: 3)
+authorization: "username:password"     # HTTP Basic Auth for API (empty = disabled)
 
 services:
   # Continuous service (long-running)
@@ -307,15 +337,19 @@ API responses also include the `enabled` field from the service configuration.
 
 ## Process Flow
 
-### Startup
-1. Load `services.yaml` (creates empty config if not exists)
-2. Parse global config (host, port, webhook URL, failure retries, authorization)
-3. Create `logs/` directory if not exists
-4. Initialize service manager with cron scheduler and webhook notifier
-5. Load service definitions and record file modification time
-6. Start enabled services (continuous processes or register cron jobs)
-7. Start config file watcher (5-second polling)
-8. Start web server on configured host:port with optional authorization
+### Startup (Event-Based)
+1. `LoadGlobalConfig("services.yaml")` - Load global config once (immutable)
+2. `NewServiceManager(globalConfig)` - Create manager with global config
+3. `NewConfigManager("services.yaml")` - Create config manager
+4. `configMgr.StartWatching(ctx, mgr)` - Load services, emit initial state, start watcher
+   - Loads services from disk (or creates empty if not exists)
+   - Emits `OnServicesUpdated(services, [])` to manager
+   - ServiceManager creates/starts all enabled services
+   - Starts background watcher goroutine (5-second polling)
+5. `NewServer(mgr, configMgr)` - Create web server with both managers
+6. Start web server on configured host:port with optional authorization
+7. Wait for shutdown signal (Ctrl+C)
+8. Graceful shutdown: stop watcher, stop all services, stop cron scheduler
 
 ### Service Start
 1. Create log files for stdout/stderr
@@ -349,18 +383,29 @@ API responses also include the `enabled` field from the service configuration.
    - Update last run statistics (time, exit code, duration)
 5. Calculate and update next run time
 
-### Config File Watching
-1. Background goroutine checks file every 5 seconds
-2. Compare current modification time with last known time
-3. If file is newer:
-   - Reload configuration
-   - Stop/unregister services removed from config
-   - Restart/reschedule services with changed config (if enabled)
-   - Start/register new services (if enabled)
-   - For scheduled services: unregister old cron job, register new one if schedule changed
+### Config File Watching (Event-Based)
+1. Background watcher goroutine in ConfigManager runs continuously
+2. Two triggers for checking changes:
+   - Timer tick every 5 seconds (regular polling)
+   - Reload channel signal (immediate after API changes)
+3. Change detection (`needsReload()`):
+   - Compare file modification time with last known time
+   - If newer, calculate SHA256 checksum
+   - If checksum differs from last known, file content actually changed
+   - If only modtime changed, update modtime and skip reload
+4. When change detected (`reloadAndNotify()`):
+   - Load services from disk (parses RootConfig, extracts services)
+   - Calculate `toKill` list: services deleted or modified
+   - Update internal state (services, modtime, checksum)
+   - **Emit event**: `listener.OnServicesUpdated(services, toKill)`
+5. ServiceManager handles event (`OnServicesUpdated()`):
+   - Stop and remove services in `toKill` list
+   - Remove services no longer in config
+   - Create new services (start if enabled)
+   - Update config reference for existing services
    - Preserve service order from YAML
-   - Update modification time
-4. UI automatically picks up changes (2-second polling + immediate updates on actions)
+6. UI automatically picks up changes (2-second polling + immediate updates on actions)
+7. **Cooldown**: 2-second cooldown prevents excessive reloads from rapid external changes
 
 ### Log Streaming
 1. Client connects via WebSocket
@@ -369,41 +414,54 @@ API responses also include the `enabled` field from the service configuration.
 4. New logs broadcast to all connected clients
 5. Client disconnects → remove from broadcast list
 
-### Service Creation
-1. Receive POST request with service config
-2. Validate service config (name unique, command not empty)
-3. Parse existing YAML preserving comments using yaml.v3 Node API
-4. Add new service node to the services array
-5. Write updated YAML back to file
-6. Reload configuration
-7. Start new service
-8. Return success response
+### Service Creation (Event-Based Flow)
+1. Server receives POST request → `configMgr.AddService(config)`
+2. ConfigManager validates (name unique, command not empty)
+3. ConfigManager adds service to internal list
+4. ConfigManager saves to disk (preserves global config)
+5. ConfigManager triggers reload via channel
+6. Watcher calls `reloadAndNotify()` → emits `OnServicesUpdated()`
+7. ServiceManager receives event, creates and starts new service
+8. Return success response to client
 
-### Service Update
-1. Receive PUT request with updated service config
-2. Validate new config
-3. Stop the existing service if running
-4. Parse existing YAML preserving comments using yaml.v3 Node API
-5. Find and update the service node in the services array
-6. Write updated YAML back to file
-7. Reload configuration (starts if enabled)
-8. Return success response
+### Service Update (Event-Based Flow)
+1. Server receives PUT request → `configMgr.UpdateService(name, config)`
+2. ConfigManager validates new config
+3. ConfigManager updates service in internal list
+4. ConfigManager saves to disk (preserves global config)
+5. ConfigManager triggers reload via channel
+6. Watcher calls `reloadAndNotify()` → calculates `toKill` (includes modified service)
+7. ServiceManager receives event:
+   - Stops old instance (in `toKill` list)
+   - Creates new instance with updated config
+   - Starts if enabled
+8. Return success response to client
 
-### Service Start/Stop (Persistent)
-- **Start**: Sets `enabled: true` in YAML, then starts the process (or registers cron job)
-- **Stop**: Sets `enabled: false` in YAML, then stops the process (or unregisters cron job)
-- **Restart**: Stops and starts without changing enabled flag (continuous services only)
-- **Run Now**: Immediately runs a scheduled service (returns 409 if already running)
-- Changes persist across service manager restarts
+### Service Enable/Disable (Event-Based Flow)
+1. Server receives POST to enable/disable → `configMgr.SetServiceEnabled(name, enabled)`
+2. ConfigManager updates enabled flag in internal service config
+3. ConfigManager saves to disk (preserves global config)
+4. ConfigManager triggers reload via channel
+5. Watcher calls `reloadAndNotify()` → calculates `toKill` (includes service if disabled or config changed)
+6. ServiceManager receives event and applies changes
+7. Return success response to client
 
-### Service Deletion
-1. Receive DELETE request
-2. Stop the service if running
-3. Parse existing YAML preserving comments
-4. Remove service node from services array
-5. Write updated YAML back to file
-6. Reload configuration
-7. Return success response
+### Service Deletion (Event-Based Flow)
+1. Server receives DELETE request → `configMgr.DeleteService(name)`
+2. ConfigManager removes service from internal list
+3. ConfigManager saves to disk (preserves global config)
+4. ConfigManager triggers reload via channel
+5. Watcher calls `reloadAndNotify()` → includes service in `toKill` list
+6. ServiceManager receives event, stops and removes service
+7. Return success response to client
+
+### Runtime Control (Non-Persistent)
+These operations don't modify YAML, only control runtime state:
+- **StartService()**: Start service process (continuous) or run now (scheduled)
+- **StopService()**: Stop service process temporarily
+- **RestartService()**: Stop and start (continuous only)
+- **RunNow()**: Immediately run scheduled service (409 if already running)
+- Changes don't persist across service manager restarts
 
 ### Webhook Notification
 1. Service crashes and consecutive failure count reaches threshold
@@ -431,41 +489,61 @@ API responses also include the `enabled` field from the service configuration.
 - Missing authorization header when auth enabled: Return 401 Unauthorized
 
 ## Implementation Notes
-- Use `sync.RWMutex` for concurrent access to service map and order slice
+
+### Concurrency & Threading
+- Use `sync.RWMutex` for concurrent access to service map and order slice (ServiceManager)
+- Use `sync.RWMutex` for concurrent access to services list (ConfigManager)
 - Use channels for graceful shutdown of config watcher and cron scheduler
-- Circular buffer: Fixed-size ring buffer (10KB)
-- Process monitoring: Use `cmd.Wait()` to detect exit
+- Config watcher runs in background goroutine with 5-second ticker + reload channel
 - All continuous services run in separate goroutines
 - Scheduled services execute synchronously in cron job handler
-- Config watcher runs in background goroutine with 5-second ticker
 - Web server runs in main goroutine with graceful shutdown support
+
+### Event-Based Architecture
+- **ConfigListener Interface**: Single method `OnServicesUpdated(services, toKill)`
+- **Listener passed to StartWatching()**: Decouples initialization from listener registration
+- **Only watcher emits events**: API methods save to disk and trigger reload, watcher handles notification
+- **Consistent event flow**: External edits and API changes both go through watcher
+- **Cooldown mechanism**: 2-second cooldown prevents excessive reloads from rapid changes
+- **Immediate reload channel**: API changes trigger immediate reload (bypasses cooldown)
+
+### Configuration Management
+- **Single file**: `services.yaml` contains both global config and services
+- **RootConfig structure**: `GlobalConfig` embedded inline + `Services []ServiceConfig`
+- **Global config immutable**: Loaded once at startup, requires restart to change
+- **Service config mutable**: Watched for changes via polling + checksum
+- **Change detection**: Modtime check first, then SHA256 checksum if newer
+- **Atomic writes**: Write to temp file, then rename (atomic on POSIX systems)
+- **Preserve global config**: When saving services, read existing file to preserve global fields
+
+### Service Management
 - **Service Order Preservation**: Maintain separate slice to preserve YAML order
   - Services map provides O(1) lookup by name
   - Order slice provides ordered iteration for UI display
-- **YAML Comment Preservation**: Use `yaml.v3` Node API for parsing/encoding
-  - Decode to `yaml.Node` instead of structs for modifications
-  - Traverse/modify nodes directly
-  - Encode back to preserve all formatting and comments
-  - Helper functions: `AddService()`, `UpdateService()`, `DeleteService()`, `SetServiceEnabled()`
 - **Enabled Flag Handling**:
   - Pointer to bool allows nil = enabled (backwards compatibility)
   - `IsEnabled()` helper treats nil and true as enabled
-  - Start/Stop operations update YAML immediately
+  - Enable/disable operations update YAML and trigger reload
   - Auto-restart respects enabled flag (continuous services only)
-- **Cron Scheduling**:
-  - Use `robfig/cron/v3` with 5-field parser
-  - Each scheduled service gets unique cron entry ID for removal
-  - Cron jobs call service run method which handles overlap prevention
-  - Next run time calculated from cron schedule
-  - Scheduler started on manager initialization, stopped on shutdown
-- **Webhook Notifications**:
-  - Only triggered for continuous services that crash repeatedly
-  - Consecutive failure counter tracked per service instance
-  - Counter resets on successful service start
-  - Webhook requests have 10-second timeout
-  - Failures logged but non-blocking to service management
-- **HTTP Authorization**:
-  - Basic Auth middleware applied to all API endpoints
-  - Authorization header format: `Authorization: Basic base64(username:password)`
-  - Static files (web UI) served without authentication
-  - Disabled when authorization field empty or omitted in config
+- **Circular buffer**: Fixed-size ring buffer (10KB) for recent logs
+- **Process monitoring**: Use `cmd.Wait()` to detect exit
+
+### Cron Scheduling
+- Use `robfig/cron/v3` with 5-field parser
+- Each scheduled service gets unique cron entry ID for removal
+- Cron jobs call service run method which handles overlap prevention
+- Next run time calculated from cron schedule
+- Scheduler started on manager initialization, stopped on shutdown
+
+### Webhook Notifications
+- Only triggered for continuous services that crash repeatedly
+- Consecutive failure counter tracked per service instance
+- Counter resets on successful service start
+- Webhook requests have 10-second timeout
+- Failures logged but non-blocking to service management
+
+### HTTP Authorization
+- Basic Auth middleware applied to all API endpoints
+- Authorization header format: `Authorization: Basic base64(username:password)`
+- Static files (web UI) served without authentication
+- Disabled when authorization field empty or omitted in config
