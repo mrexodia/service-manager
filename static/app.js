@@ -440,6 +440,10 @@ async function showEditForm() {
         }
         document.getElementById('editEnv').value = envLines.join('\n');
 
+        // Store enabled and schedule state to preserve them during update
+        document.getElementById('editForm').dataset.enabled = JSON.stringify(service.enabled);
+        document.getElementById('editForm').dataset.schedule = service.schedule || '';
+
         document.getElementById('editForm').style.display = 'block';
     } catch (error) {
         console.error('Failed to load service for editing:', error);
@@ -475,12 +479,19 @@ async function handleUpdateService(e) {
         }
     });
 
+    // Retrieve preserved enabled and schedule values
+    const editForm = document.getElementById('editForm');
+    const enabledValue = JSON.parse(editForm.dataset.enabled);
+    const scheduleValue = editForm.dataset.schedule;
+
     const service = {
         name,
         command,
         args: args.length > 0 ? args : undefined,
         workdir: workdir || undefined,
-        env: Object.keys(env).length > 0 ? env : undefined
+        env: Object.keys(env).length > 0 ? env : undefined,
+        enabled: enabledValue,
+        schedule: scheduleValue || undefined
     };
 
     try {
