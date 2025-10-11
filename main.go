@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -15,6 +17,13 @@ func main() {
 	globalConfig, err := LoadGlobalConfig("services.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load global config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if port is already in use
+	addr := fmt.Sprintf("%s:%d", globalConfig.Host, globalConfig.Port)
+	if isPortInUse(addr) {
+		fmt.Fprintf(os.Stderr, "Error: Port %d is already in use. Another instance may be running.\n", globalConfig.Port)
 		os.Exit(1)
 	}
 
@@ -61,4 +70,17 @@ func main() {
 	configManager.Stop()
 	serviceManager.StopAll()
 	fmt.Println("Service Manager stopped")
+}
+
+// isPortInUse checks if a port is already in use by attempting to listen on it
+func isPortInUse(addr string) bool {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return true // Port is in use or unreachable
+	}
+	listener.Close()
+
+	// Small delay to ensure port is fully released
+	time.Sleep(10 * time.Millisecond)
+	return false
 }
