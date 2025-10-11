@@ -34,12 +34,11 @@ Services are defined in `services.yaml`. Example:
 
 ```yaml
 # Global configuration
-config:
-  host: "127.0.0.1" # Listen address (default: 127.0.0.1)
-  port: 4321 # Web UI port (default: 4321)
-  failure_webhook_url: "" # HTTP POST webhook for service failures (empty = disabled)
-  failure_retries: 3 # Number of consecutive failures before webhook triggers (default: 3)
-  authorization: "password" # BasicAuth credentials: "username:password" or just "password" (empty = no auth)
+host: "127.0.0.1" # Listen address (default: 127.0.0.1)
+port: 4321 # Web UI port (default: 4321)
+failure_webhook_url: "" # HTTP POST webhook for service failures (empty = disabled)
+failure_retries: 3 # Number of consecutive failures before webhook triggers (default: 3)
+authorization: "password" # BasicAuth credentials: "username:password" or just "password" (empty = no auth)
 services:
   # Example: A simple ping service
   - name: ping-example
