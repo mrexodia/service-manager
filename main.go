@@ -39,8 +39,9 @@ func main() {
 	mgr.StartConfigWatch()
 	fmt.Println("Watching services.yaml for changes...")
 
-	// Start web server
-	server := web.New(mgr, 4321)
+	// Start web server with configured host/port
+	globalCfg := mgr.GetGlobalConfig()
+	server := web.New(mgr, globalCfg.Host, globalCfg.Port)
 	go func() {
 		if err := server.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
@@ -61,6 +62,12 @@ func main() {
 func createEmptyConfig() error {
 	content := `# Service Manager Configuration
 # Define your services below
+
+config:
+  host: "0.0.0.0"
+  port: 4321
+  failure_webhook_url: ""
+  failure_threshold: 3
 
 services: []
 `

@@ -6,24 +6,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"service-manager/config"
 	"service-manager/service"
+	"service-manager/webhook"
 )
 
 // Manager manages all services
 type Manager struct {
-	services       map[string]*service.Service
-	order          []string // Maintains service order from YAML
-	lastModTime    time.Time
-	mu             sync.RWMutex
-	stopWatchChan  chan struct{}
+	services          map[string]*service.Service
+	order             []string // Maintains service order from YAML
+	cronScheduler     *cron.Cron
+	cronEntries       map[string]cron.EntryID // Maps service name to cron entry ID
+	lastModTime       time.Time
+	globalConfig      config.GlobalConfig
+	webhookNotifier   *webhook.Notifier
+	webhookSent       map[string]bool // Track if webhook was sent for a service (reset on success)
+	mu                sync.RWMutex
+	stopWatchChan     chan struct{}
 }
 
 // New creates a new manager
 func New() *Manager {
+	cronScheduler := cron.New()
+	cronScheduler.Start()
+
 	return &Manager{
 		services:      make(map[string]*service.Service),
 		order:         make([]string, 0),
+		cronScheduler: cronScheduler,
+		cronEntries:   make(map[string]cron.EntryID),
+		webhookSent:   make(map[string]bool),
 		stopWatchChan: make(chan struct{}),
 	}
 }
@@ -32,6 +45,10 @@ func New() *Manager {
 func (m *Manager) LoadConfig(cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Store global config and create webhook notifier
+	m.globalConfig = cfg.Global
+	m.webhookNotifier = webhook.NewNotifier(cfg.Global.FailureWebhookURL)
 
 	// Record the modification time
 	if info, err := os.Stat("services.yaml"); err == nil {
@@ -43,8 +60,20 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 		m.services[svcCfg.Name] = svc
 		m.order = append(m.order, svcCfg.Name)
 
-		// Only start if enabled
-		if svcCfg.IsEnabled() {
+		// Set failure callback
+		svc.SetFailureCallback(m.handleServiceFailure)
+
+		if !svcCfg.IsEnabled() {
+			continue
+		}
+
+		// Scheduled services use cron
+		if svcCfg.IsScheduled() {
+			if err := m.scheduleService(svcCfg.Name, svc); err != nil {
+				fmt.Printf("Warning: Failed to schedule service %s: %v\n", svcCfg.Name, err)
+			}
+		} else {
+			// Continuous services start immediately
 			if err := svc.Start(); err != nil {
 				fmt.Printf("Warning: Failed to start service %s: %v\n", svcCfg.Name, err)
 			}
@@ -64,6 +93,10 @@ func (m *Manager) ReloadConfig() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Update global config and webhook notifier
+	m.globalConfig = cfg.Global
+	m.webhookNotifier = webhook.NewNotifier(cfg.Global.FailureWebhookURL)
+
 	// Build a map of new services
 	newServices := make(map[string]config.ServiceConfig)
 	newOrder := make([]string, 0, len(cfg.Services))
@@ -75,6 +108,7 @@ func (m *Manager) ReloadConfig() error {
 	// Stop and remove services that are no longer in the config
 	for name, svc := range m.services {
 		if _, exists := newServices[name]; !exists {
+			m.unscheduleService(name) // Remove from cron if scheduled
 			svc.Stop()
 			delete(m.services, name)
 		}
@@ -86,23 +120,40 @@ func (m *Manager) ReloadConfig() error {
 		if existing, exists := m.services[name]; exists {
 			// Service exists, check if config changed
 			if !configEqual(existing.Config, svcCfg) {
-				// Config changed, restart service if enabled
+				// Config changed, stop existing and create new
+				m.unscheduleService(name)
 				existing.Stop()
 				newSvc := service.New(svcCfg)
+				newSvc.SetFailureCallback(m.handleServiceFailure)
 				m.services[name] = newSvc
+
 				if svcCfg.IsEnabled() {
-					if err := newSvc.Start(); err != nil {
-						fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
+					if svcCfg.IsScheduled() {
+						if err := m.scheduleService(name, newSvc); err != nil {
+							fmt.Printf("Warning: Failed to schedule service %s: %v\n", name, err)
+						}
+					} else {
+						if err := newSvc.Start(); err != nil {
+							fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
+						}
 					}
 				}
 			}
 		} else {
-			// New service, only start if enabled
+			// New service
 			svc := service.New(svcCfg)
+			svc.SetFailureCallback(m.handleServiceFailure)
 			m.services[name] = svc
+
 			if svcCfg.IsEnabled() {
-				if err := svc.Start(); err != nil {
-					fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
+				if svcCfg.IsScheduled() {
+					if err := m.scheduleService(name, svc); err != nil {
+						fmt.Printf("Warning: Failed to schedule service %s: %v\n", name, err)
+					}
+				} else {
+					if err := svc.Start(); err != nil {
+						fmt.Printf("Warning: Failed to start service %s: %v\n", name, err)
+					}
 				}
 			}
 		}
@@ -130,6 +181,13 @@ func (m *Manager) GetService(name string) (*service.Service, error) {
 	}
 
 	return svc, nil
+}
+
+// GetGlobalConfig returns the global configuration
+func (m *Manager) GetGlobalConfig() config.GlobalConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.globalConfig
 }
 
 // GetAllServices returns all services in YAML order
@@ -278,16 +336,122 @@ func (m *Manager) StartConfigWatch() {
 	}()
 }
 
-// StopAll stops all services and the config watcher
+// scheduleService adds a service to the cron scheduler
+func (m *Manager) scheduleService(name string, svc *service.Service) error {
+	// Remove existing schedule if any
+	m.unscheduleService(name)
+
+	entryID, err := m.cronScheduler.AddFunc(svc.Config.Schedule, func() {
+		// Check if already running (overlap prevention)
+		if svc.IsRunning() {
+			// Log overlap skip to stderr
+			logMsg := fmt.Sprintf("[%s] Scheduled run skipped: previous instance still running\n",
+				time.Now().Format("2006-01-02 15:04:05"))
+			svc.WriteStderrLog(logMsg)
+			return
+		}
+
+		// Start the service
+		if err := svc.Start(); err != nil {
+			fmt.Printf("Failed to start scheduled service %s: %v\n", name, err)
+		}
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to parse cron schedule %q: %w", svc.Config.Schedule, err)
+	}
+
+	m.cronEntries[name] = entryID
+	return nil
+}
+
+// unscheduleService removes a service from the cron scheduler
+func (m *Manager) unscheduleService(name string) {
+	if entryID, exists := m.cronEntries[name]; exists {
+		m.cronScheduler.Remove(entryID)
+		delete(m.cronEntries, name)
+	}
+}
+
+// GetNextRunTime returns the next scheduled run time for a service
+func (m *Manager) GetNextRunTime(name string) (time.Time, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entryID, exists := m.cronEntries[name]
+	if !exists {
+		return time.Time{}, false
+	}
+
+	entry := m.cronScheduler.Entry(entryID)
+	return entry.Next, true
+}
+
+// StopAll stops all services, the cron scheduler, and the config watcher
 func (m *Manager) StopAll() {
 	// Stop config watcher
 	close(m.stopWatchChan)
+
+	// Stop cron scheduler
+	ctx := m.cronScheduler.Stop()
+	<-ctx.Done()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, svc := range m.services {
 		svc.Stop()
+	}
+}
+
+// handleServiceFailure is called when a service fails or succeeds (to reset state)
+// Note: This callback is triggered on every service exit, not just failures
+func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures int, exitCode int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Reset webhook sent flag if service succeeded (exitCode 0 means consecutiveFailures will be 0)
+	if exitCode == 0 {
+		delete(m.webhookSent, serviceName)
+		return
+	}
+
+	// Check if we should send webhook
+	threshold := m.globalConfig.FailureThreshold
+	if consecutiveFailures < threshold {
+		return // Not enough failures yet
+	}
+
+	// Check if we already sent webhook for this service
+	if m.webhookSent[serviceName] {
+		return // Already sent, don't spam
+	}
+
+	// Send webhook
+	if m.webhookNotifier != nil {
+		payload := webhook.FailurePayload{
+			ServiceName:       serviceName,
+			Timestamp:         time.Now(),
+			FailureCount:      consecutiveFailures,
+			LastExitCode:      exitCode,
+			ErrorMessage:      "",
+			ConsecutiveErrors: consecutiveFailures,
+		}
+
+		if err != nil {
+			payload.ErrorMessage = err.Error()
+		}
+
+		go func() {
+			if err := m.webhookNotifier.NotifyFailure(payload); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to send webhook for service %s: %v\n", serviceName, err)
+			} else {
+				fmt.Printf("Webhook sent for service %s (consecutive failures: %d)\n", serviceName, consecutiveFailures)
+			}
+		}()
+
+		// Mark that we sent webhook for this service
+		m.webhookSent[serviceName] = true
 	}
 }
 
@@ -299,6 +463,11 @@ func configEqual(a, b config.ServiceConfig) bool {
 
 	// Check enabled flag
 	if a.IsEnabled() != b.IsEnabled() {
+		return false
+	}
+
+	// Check schedule
+	if a.Schedule != b.Schedule {
 		return false
 	}
 

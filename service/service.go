@@ -18,6 +18,9 @@ const (
 	restartDelay  = 1 * time.Second
 )
 
+// FailureCallback is called when a service fails
+type FailureCallback func(serviceName string, consecutiveFailures int, exitCode int, err error)
+
 // Service represents a managed service instance
 type Service struct {
 	Config   config.ServiceConfig
@@ -26,6 +29,16 @@ type Service struct {
 	pid      int
 	startTime time.Time
 	restarts int
+
+	// Scheduled service tracking
+	lastRunTime  time.Time
+	lastExitCode int
+	lastDuration time.Duration
+
+	// Failure tracking
+	consecutiveFailures int
+	lastError           error
+	failureCallback     FailureCallback
 
 	stdoutBuf *CircularBuffer
 	stderrBuf *CircularBuffer
@@ -144,6 +157,13 @@ func New(cfg config.ServiceConfig) *Service {
 	}
 }
 
+// SetFailureCallback sets the callback to be called when the service fails
+func (s *Service) SetFailureCallback(callback FailureCallback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failureCallback = callback
+}
+
 // Start starts the service
 func (s *Service) Start() error {
 	s.mu.Lock()
@@ -192,6 +212,15 @@ func (s *Service) Start() error {
 	s.running = true
 	s.pid = s.cmd.Process.Pid
 	s.startTime = time.Now()
+
+	// Log start time for scheduled services
+	if s.Config.IsScheduled() && s.stderrFile != nil {
+		logMsg := fmt.Sprintf("[%s] Starting scheduled task: %s\n",
+			s.startTime.Format("2006-01-02 15:04:05"), s.Config.Name)
+		s.stderrFile.WriteString(logMsg)
+		s.stderrBuf.Write([]byte(logMsg))
+		s.stderrBroadcast.Broadcast(logMsg)
+	}
 
 	// Start log readers
 	go s.readLogs(stdout, s.stdoutFile, s.stdoutBuf, s.stdoutBroadcast)
@@ -261,22 +290,36 @@ func (s *Service) GetStatus() Status {
 		uptime = time.Since(s.startTime)
 	}
 
+	// Only include lastRunTime if it's been set (not zero value)
+	var lastRunTime *time.Time
+	if !s.lastRunTime.IsZero() {
+		lastRunTime = &s.lastRunTime
+	}
+
 	return Status{
-		Name:     s.Config.Name,
-		Running:  s.running,
-		PID:      s.pid,
-		Uptime:   uptime,
-		Restarts: s.restarts,
+		Name:                s.Config.Name,
+		Running:             s.running,
+		PID:                 s.pid,
+		Uptime:              uptime,
+		Restarts:            s.restarts,
+		LastRunTime:         lastRunTime,
+		LastExitCode:        s.lastExitCode,
+		LastDuration:        s.lastDuration,
+		ConsecutiveFailures: s.consecutiveFailures,
 	}
 }
 
 // Status represents service status information
 type Status struct {
-	Name     string        `json:"name"`
-	Running  bool          `json:"running"`
-	PID      int           `json:"pid"`
-	Uptime   time.Duration `json:"uptime"`
-	Restarts int           `json:"restarts"`
+	Name                string         `json:"name"`
+	Running             bool           `json:"running"`
+	PID                 int            `json:"pid"`
+	Uptime              time.Duration  `json:"uptime"`
+	Restarts            int            `json:"restarts"`
+	LastRunTime         *time.Time     `json:"lastRunTime,omitempty"`
+	LastExitCode        int            `json:"lastExitCode"`
+	LastDuration        time.Duration  `json:"lastDuration"`
+	ConsecutiveFailures int            `json:"consecutiveFailures"`
 }
 
 // GetStdoutBuffer returns the stdout buffer contents
@@ -309,6 +352,18 @@ func (s *Service) UnsubscribeStderr(ch chan string) {
 	s.stderrBroadcast.Unsubscribe(ch)
 }
 
+// WriteStderrLog writes a message to the stderr log (for cron overlap messages)
+func (s *Service) WriteStderrLog(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stderrFile != nil {
+		s.stderrFile.WriteString(msg)
+	}
+	s.stderrBuf.Write([]byte(msg))
+	s.stderrBroadcast.Broadcast(msg)
+}
+
 // openLogFiles opens the log files for writing
 func (s *Service) openLogFiles() error {
 	if err := os.MkdirAll("logs", 0755); err != nil {
@@ -337,9 +392,11 @@ func (s *Service) openLogFiles() error {
 func (s *Service) closeLogFiles() {
 	if s.stdoutFile != nil {
 		s.stdoutFile.Close()
+		s.stdoutFile = nil
 	}
 	if s.stderrFile != nil {
 		s.stderrFile.Close()
+		s.stderrFile = nil
 	}
 }
 
@@ -364,15 +421,64 @@ func (s *Service) readLogs(pipe io.Reader, file *os.File, buf *CircularBuffer, b
 
 // monitor watches the process and handles restarts
 func (s *Service) monitor() {
+	startTime := time.Now()
 	err := s.cmd.Wait()
+	duration := time.Since(startTime)
+
+	// Get exit code
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1 // Unknown error
+		}
+	}
 
 	s.mu.Lock()
 	s.running = false
 	s.pid = 0
+	s.lastRunTime = startTime
+	s.lastExitCode = exitCode
+	s.lastDuration = duration
+	s.lastError = err
+
+	// Log to stderr for scheduled services BEFORE closing files
+	if s.Config.IsScheduled() && s.stderrFile != nil {
+		endTime := time.Now()
+		logMsg := fmt.Sprintf("[%s] Task ended with exit code: %d (duration: %v)\n",
+			endTime.Format("2006-01-02 15:04:05"), exitCode, duration.Round(time.Second))
+		s.stderrFile.WriteString(logMsg)
+		s.stderrBuf.Write([]byte(logMsg))
+		s.stderrBroadcast.Broadcast(logMsg)
+	}
+
 	s.closeLogFiles()
+
+	// Track failures (exit code 0 = success, anything else = failure)
+	if exitCode == 0 {
+		// Success - reset consecutive failures
+		s.consecutiveFailures = 0
+	} else {
+		// Failure - increment counter
+		s.consecutiveFailures++
+	}
+
+	// Call failure callback (both on failure and success, so manager can reset state)
+	callback := s.failureCallback
+	consecutiveFailures := s.consecutiveFailures
 	s.mu.Unlock()
 
-	// Check if we should restart
+	if callback != nil {
+		callback(s.Config.Name, consecutiveFailures, exitCode, err)
+	}
+
+	// Scheduled services don't auto-restart, let the scheduler handle it
+	if s.Config.IsScheduled() {
+		return
+	}
+
+	// Continuous services: check if we should restart
 	select {
 	case <-s.stopChan:
 		// Stopped intentionally, don't restart

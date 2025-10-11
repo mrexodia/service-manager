@@ -350,3 +350,110 @@ body {
 .service-list::-webkit-scrollbar-thumb:hover {
     background: #4a5f7f;
 }
+
+/* Scheduled Services */
+.clock-icon {
+    font-size: 14px;
+    opacity: 0.9;
+}
+
+.service-item.scheduled {
+    border-left: 3px solid #f39c12;
+}
+
+.service-item.continuous {
+    border-left: 3px solid transparent;
+}
+
+.next-run {
+    font-size: 12px;
+    color: #95a5a6;
+    margin-left: 24px;
+}
+
+.status-badge.idle {
+    background-color: #95a5a6;
+    color: white;
+}
+
+.status-badge.scheduled {
+    background-color: #f39c12;
+    color: white;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.toggle-switch input[type="checkbox"] {
+    position: relative;
+    width: 50px;
+    height: 24px;
+    -webkit-appearance: none;
+    background-color: #e74c3c;
+    outline: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.toggle-switch input[type="checkbox"]:checked {
+    background-color: #2ecc71;
+}
+
+.toggle-switch input[type="checkbox"]:before {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    top: 2px;
+    left: 2px;
+    background-color: white;
+    transition: left 0.3s;
+}
+
+.toggle-switch input[type="checkbox"]:checked:before {
+    left: 28px;
+}
+
+.toggle-label {
+    font-size: 14px;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+/* Run Now Button */
+.btn-run-now {
+    background-color: #f39c12;
+    color: white;
+}
+
+/* Last Run Stats */
+.last-run-stats {
+    padding: 15px 20px;
+    background-color: #f8f9fa;
+    border-bottom: 2px solid #ecf0f1;
+    font-size: 14px;
+}
+
+.last-run-item {
+    display: inline-block;
+    margin-right: 20px;
+    color: #7f8c8d;
+}
+
+.last-run-item strong {
+    color: #2c3e50;
+}
+
+.last-run-item.success {
+    color: #2ecc71;
+}
+
+.last-run-item.error {
+    color: #e74c3c;
+}

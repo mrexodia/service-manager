@@ -2,6 +2,13 @@
 # This is an example configuration file
 # You can add, edit, and delete services via the web UI
 
+# Global configuration
+config:
+  host: "0.0.0.0"           # Listen address (default: 0.0.0.0)
+  port: 4321                # Web UI port (default: 4321)
+  failure_webhook_url: ""   # HTTP POST webhook for service failures (empty = disabled)
+  failure_threshold: 3      # Number of consecutive failures before webhook triggers (default: 3)
+
 services:
   # Example: A simple ping service
   - name: ping-example
@@ -22,3 +29,12 @@ services:
     workdir: ""
     env:
       EXAMPLE_VAR: "hello"
+
+  # Example: Scheduled service that runs every 5 minutes
+  - name: hourly-cleanup
+    command: cmd
+    args:
+      - /c
+      - echo Cleanup completed at %DATE% %TIME%
+    schedule: "*/5 * * * *"  # Every 5 minutes
+    enabled: true

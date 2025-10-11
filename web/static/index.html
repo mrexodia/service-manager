@@ -37,6 +37,11 @@
                         <button id="startBtn" class="btn btn-success">Start</button>
                         <button id="stopBtn" class="btn btn-danger">Stop</button>
                         <button id="restartBtn" class="btn btn-warning">Restart</button>
+                        <button id="runNowBtn" class="btn btn-run-now" style="display: none;">Run Now</button>
+                        <div id="toggleContainer" class="toggle-switch" style="display: none;">
+                            <input type="checkbox" id="enableToggle" onchange="handleToggleEnabled()">
+                            <span class="toggle-label">Enabled</span>
+                        </div>
                         <button id="editBtn" class="btn btn-secondary">Edit</button>
                         <button id="deleteBtn" class="btn btn-danger">Delete</button>
                     </div>

@@ -25,6 +25,7 @@ function setupEventListeners() {
     document.getElementById('startBtn').addEventListener('click', () => controlService('start'));
     document.getElementById('stopBtn').addEventListener('click', () => controlService('stop'));
     document.getElementById('restartBtn').addEventListener('click', () => controlService('restart'));
+    document.getElementById('runNowBtn').addEventListener('click', handleRunNow);
     document.getElementById('deleteBtn').addEventListener('click', handleDeleteService);
 
     // Log tabs
@@ -75,14 +76,29 @@ function renderServiceList(services) {
             item.classList.add('disabled');
         }
 
-        const dot = document.createElement('div');
-        dot.className = `status-dot ${service.running ? 'running' : 'stopped'}`;
+        // Add scheduled/continuous class for styling
+        if (isScheduledService(service)) {
+            item.classList.add('scheduled');
+        } else {
+            item.classList.add('continuous');
+        }
+
+        // Show clock icon for scheduled services, status dot for continuous
+        if (isScheduledService(service)) {
+            const clock = document.createElement('div');
+            clock.className = 'clock-icon';
+            clock.textContent = '⏰';
+            item.appendChild(clock);
+        } else {
+            const dot = document.createElement('div');
+            dot.className = `status-dot ${service.running ? 'running' : 'stopped'}`;
+            item.appendChild(dot);
+        }
 
         const name = document.createElement('div');
         name.className = 'service-item-name';
         name.textContent = service.name;
 
-        item.appendChild(dot);
         item.appendChild(name);
 
         item.addEventListener('click', () => selectService(service.name));
@@ -123,19 +139,44 @@ function showServiceView(service) {
     document.getElementById('serviceName').textContent = service.name;
     updateServiceStatus(service);
 
-    // Update buttons
+    // Update buttons based on service type
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const restartBtn = document.getElementById('restartBtn');
+    const runNowBtn = document.getElementById('runNowBtn');
+    const toggleContainer = document.getElementById('toggleContainer');
 
-    if (service.running) {
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        restartBtn.disabled = false;
+    if (isScheduledService(service)) {
+        // Scheduled service: show Run Now button and toggle
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'none';
+        restartBtn.style.display = 'none';
+        runNowBtn.style.display = 'inline-block';
+        toggleContainer.style.display = 'inline-flex';
+
+        // Update toggle state
+        const toggleSwitch = document.getElementById('enableToggle');
+        toggleSwitch.checked = service.enabled !== false;
+
+        // Disable Run Now if already running
+        runNowBtn.disabled = service.running;
     } else {
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        restartBtn.disabled = true;
+        // Continuous service: show Start/Stop/Restart buttons
+        startBtn.style.display = 'inline-block';
+        stopBtn.style.display = 'inline-block';
+        restartBtn.style.display = 'inline-block';
+        runNowBtn.style.display = 'none';
+        toggleContainer.style.display = 'none';
+
+        if (service.running) {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            restartBtn.disabled = false;
+        } else {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            restartBtn.disabled = true;
+        }
     }
 
     // Hide edit form if visible
@@ -145,32 +186,74 @@ function showServiceView(service) {
 // Update service status display
 function updateServiceStatus(service) {
     const badge = document.getElementById('statusBadge');
-    badge.textContent = service.running ? 'Running' : 'Stopped';
-    badge.className = `status-badge ${service.running ? 'running' : 'stopped'}`;
-
     const stats = document.getElementById('serviceStats');
-    const uptime = service.running ? formatUptime(service.uptime) : 'N/A';
-    const pid = service.running ? service.pid : 'N/A';
-    const enabled = service.enabled !== false ? 'Yes' : 'No';
 
-    stats.innerHTML = `
-        <div class="stat-item">
-            <div class="stat-label">PID</div>
-            <div class="stat-value">${pid}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Uptime</div>
-            <div class="stat-value">${uptime}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Restarts</div>
-            <div class="stat-value">${service.restarts}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Auto-start</div>
-            <div class="stat-value">${enabled}</div>
-        </div>
-    `;
+    if (isScheduledService(service)) {
+        // Scheduled service status
+        if (service.running) {
+            badge.textContent = 'Running';
+            badge.className = 'status-badge running';
+        } else {
+            badge.textContent = service.enabled !== false ? 'Scheduled' : 'Disabled';
+            badge.className = `status-badge ${service.enabled !== false ? 'scheduled' : 'stopped'}`;
+        }
+
+        // Show next run and last run info
+        const nextRun = service.nextRunTime ? formatNextRun(service.nextRunTime) : 'N/A';
+        const lastRun = service.lastRunTime ? formatLastRun(service.lastRunTime) : 'Never';
+        const lastExitCode = service.lastExitCode !== undefined ? service.lastExitCode : 'N/A';
+        const lastDuration = service.lastDuration ? formatDuration(service.lastDuration) : 'N/A';
+
+        stats.innerHTML = `
+            <div class="stat-item">
+                <div class="stat-label">Schedule</div>
+                <div class="stat-value">${service.schedule || 'N/A'}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Next Run</div>
+                <div class="stat-value">${nextRun}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Last Run</div>
+                <div class="stat-value">${lastRun}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Last Exit Code</div>
+                <div class="stat-value">${lastExitCode}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Last Duration</div>
+                <div class="stat-value">${lastDuration}</div>
+            </div>
+        `;
+    } else {
+        // Continuous service status
+        badge.textContent = service.running ? 'Running' : 'Stopped';
+        badge.className = `status-badge ${service.running ? 'running' : 'stopped'}`;
+
+        const uptime = service.running ? formatUptime(service.uptime) : 'N/A';
+        const pid = service.running ? service.pid : 'N/A';
+        const enabled = service.enabled !== false ? 'Yes' : 'No';
+
+        stats.innerHTML = `
+            <div class="stat-item">
+                <div class="stat-label">PID</div>
+                <div class="stat-value">${pid}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Uptime</div>
+                <div class="stat-value">${uptime}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Restarts</div>
+                <div class="stat-value">${service.restarts}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Auto-start</div>
+                <div class="stat-value">${enabled}</div>
+            </div>
+        `;
+    }
 }
 
 // Format uptime in seconds to human readable
@@ -194,7 +277,11 @@ function connectLogStream(serviceName, stream) {
     }
 
     const logContent = document.getElementById('logContent');
+    const logViewer = logContent.parentElement;
     logContent.textContent = '';
+
+    // Reset scroll to bottom when first connecting
+    logViewer.scrollTop = logViewer.scrollHeight;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/api/services/${serviceName}/logs/${stream}`;
@@ -202,9 +289,14 @@ function connectLogStream(serviceName, stream) {
     logWebSocket = new WebSocket(url);
 
     logWebSocket.onmessage = (event) => {
+        const wasAtBottom = logViewer.scrollHeight - logViewer.scrollTop - logViewer.clientHeight < 10;
+
         logContent.textContent += event.data;
-        // Auto-scroll to bottom
-        logContent.parentElement.scrollTop = logContent.parentElement.scrollHeight;
+
+        // Only auto-scroll if already at bottom
+        if (wasAtBottom) {
+            logViewer.scrollTop = logViewer.scrollHeight;
+        }
     };
 
     logWebSocket.onerror = (error) => {
@@ -426,5 +518,138 @@ async function handleDeleteService() {
     } catch (error) {
         console.error('Failed to delete service:', error);
         alert('Failed to delete service');
+    }
+}
+
+// Helper: Check if service is scheduled
+function isScheduledService(service) {
+    return service.schedule !== undefined && service.schedule !== null && service.schedule !== '';
+}
+
+// Format next run time with relative duration
+function formatNextRun(nextRunTime) {
+    const next = new Date(nextRunTime);
+    const now = new Date();
+    const diff = next - now;
+
+    if (diff < 0) {
+        return 'Overdue';
+    }
+
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    let relative = '';
+    if (days > 0) {
+        relative = `in ${days}d ${hours % 24}h`;
+    } else if (hours > 0) {
+        relative = `in ${hours}h ${minutes % 60}m`;
+    } else if (minutes > 0) {
+        relative = `in ${minutes}m`;
+    } else {
+        relative = `in ${seconds}s`;
+    }
+
+    const timeStr = next.toLocaleTimeString();
+    return `${timeStr} (${relative})`;
+}
+
+// Format last run timestamp
+function formatLastRun(lastRunTime) {
+    const last = new Date(lastRunTime);
+    const now = new Date();
+    const diff = now - last;
+
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    let relative = '';
+    if (days > 0) {
+        relative = `${days}d ago`;
+    } else if (hours > 0) {
+        relative = `${hours}h ago`;
+    } else if (minutes > 0) {
+        relative = `${minutes}m ago`;
+    } else {
+        relative = `${seconds}s ago`;
+    }
+
+    const timeStr = last.toLocaleString();
+    return `${timeStr} (${relative})`;
+}
+
+// Format duration in milliseconds
+function formatDuration(ms) {
+    if (ms < 1000) {
+        return `${ms}ms`;
+    }
+
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) {
+        return `${seconds}s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) {
+        return `${minutes}m ${remainingSeconds}s`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${hours}h ${remainingMinutes}m`;
+}
+
+// Handle Run Now button
+async function handleRunNow() {
+    if (!selectedService) return;
+
+    try {
+        const response = await fetch(`/api/services/${selectedService}/run-now`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            // Refresh immediately
+            setTimeout(() => selectService(selectedService), 200);
+        } else if (response.status === 409) {
+            alert('Service is already running');
+        } else {
+            alert('Failed to run service');
+        }
+    } catch (error) {
+        console.error('Failed to run service:', error);
+        alert('Failed to run service');
+    }
+}
+
+// Handle toggle enabled/disabled
+async function handleToggleEnabled() {
+    if (!selectedService) return;
+
+    try {
+        const response = await fetch(`/api/services/${selectedService}`);
+        const service = await response.json();
+
+        const currentlyEnabled = service.enabled !== false;
+        const action = currentlyEnabled ? 'stop' : 'start';
+
+        const controlResponse = await fetch(`/api/services/${selectedService}/${action}`, {
+            method: 'POST'
+        });
+
+        if (controlResponse.ok) {
+            // Refresh immediately
+            setTimeout(() => selectService(selectedService), 200);
+        } else {
+            alert(`Failed to ${action} service`);
+        }
+    } catch (error) {
+        console.error('Failed to toggle service:', error);
+        alert('Failed to toggle service');
     }
 }

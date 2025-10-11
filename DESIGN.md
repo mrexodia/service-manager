@@ -5,9 +5,15 @@ A simple service manager written in Go that manages multiple services defined in
 
 ## Core Requirements
 - Define services in YAML (command, arguments, working directory, environment variables, enabled flag)
+- **Two service types**:
+  - **Continuous services**: Long-running processes with auto-restart on crash
+  - **Scheduled services**: Cron-based task scheduling (optional `schedule` field)
 - Capture stdout/stderr to separate log files per service
 - Auto-start enabled services when manager starts
-- Auto-restart services if they crash (respects enabled flag)
+- Auto-restart services if they crash (continuous services only, respects enabled flag)
+- Cron scheduling with standard 5-field syntax (minute, hour, day, month, weekday)
+- Overlap prevention for scheduled services (skip run if previous still executing)
+- Track last run time, exit code, and duration for scheduled services
 - Persistent enable/disable state via YAML `enabled` field
 - Automatic config reload when `services.yaml` changes (5-second polling)
 - Preserve service order as defined in YAML
@@ -33,29 +39,48 @@ A simple service manager written in Go that manages multiple services defined in
 - Core orchestration component
 - Maintains map of service name → service instance
 - Maintains service order as defined in YAML (preserves insertion order)
-- Starts enabled services on initialization
+- Starts enabled services on initialization (continuous or schedules cron jobs)
 - Handles service lifecycle (start, stop, restart)
-- Monitors service processes and auto-restarts on crash
+- Monitors continuous service processes and auto-restarts on crash
+- Manages cron scheduler for scheduled services
 - Watches config file for changes (5-second polling interval)
 - Automatically reloads config when `services.yaml` is modified
 - Tracks file modification time to avoid unnecessary reloads
-- `StartService()` sets `enabled=true` in YAML and starts the process
-- `StopService()` sets `enabled=false` in YAML and stops the process
-- `RestartService()` restarts without changing enabled state
+- `StartService()` sets `enabled=true` in YAML and starts the process (or registers cron)
+- `StopService()` sets `enabled=false` in YAML and stops the process (or unregisters cron)
+- `RestartService()` restarts without changing enabled state (continuous only)
+- `RunNow()` immediately runs a scheduled service (409 Conflict if already running)
 
 #### 3. Service Instance
 - Represents a single managed service
-- Manages the process (cmd.Cmd)
-- Captures stdout/stderr to log files
-- Provides status information (running, stopped, pid, uptime)
-- Circular buffer for recent logs (~10KB)
+- **For continuous services**:
+  - Manages the process (cmd.Cmd)
+  - Captures stdout/stderr to log files
+  - Provides status information (running, stopped, pid, uptime)
+  - Auto-restart on crash (if enabled)
+- **For scheduled services**:
+  - Registers cron job with scheduler
+  - Tracks next run time, last run time, last exit code, last duration
+  - Prevents overlapping runs
+  - Runs to completion (no auto-restart)
+  - Logs start/exit events to stderr
+- Circular buffer for recent logs (~10KB) for both types
 
-#### 4. Log Manager
+#### 4. Cron Scheduler
+- Built using `github.com/robfig/cron/v3` library
+- Parses standard cron expressions (5 fields: minute, hour, day, month, weekday)
+- Registers scheduled services as cron jobs
+- Handles cron job execution by calling service run method
+- Provides next run time calculation
+- Supports job removal on service stop/delete
+- Thread-safe job registration/unregistration
+
+#### 5. Log Manager
 - Writes stdout/stderr to `logs/{service-name}-stdout.log` and `logs/{service-name}-stderr.log`
 - Maintains in-memory circular buffer of recent logs for quick retrieval
 - Supports real-time log streaming via channels
 
-#### 5. Web Server
+#### 6. Web Server
 - HTTP server on port 4321
 - REST API for service control
 - WebSocket for live log streaming
@@ -64,6 +89,7 @@ A simple service manager written in Go that manages multiple services defined in
 ### Technology Stack
 - **Language**: Go 1.21+
 - **YAML parsing**: `gopkg.in/yaml.v3`
+- **Cron scheduling**: `github.com/robfig/cron/v3`
 - **Web framework**: Standard library `net/http`
 - **WebSockets**: `gorilla/websocket`
 - **Frontend**: Vanilla JavaScript, HTML, CSS
@@ -72,6 +98,7 @@ A simple service manager written in Go that manages multiple services defined in
 
 ```yaml
 services:
+  # Continuous service (long-running)
   - name: example-service
     command: /path/to/executable
     args:
@@ -82,6 +109,14 @@ services:
       KEY1: value1
       KEY2: value2
     enabled: true  # Optional: defaults to true
+
+  # Scheduled service (cron-based)
+  - name: cleanup-job
+    command: /path/to/cleanup
+    args:
+      - --deep-clean
+    schedule: "0 2 * * *"  # Daily at 2:00 AM
+    enabled: true
 
   - name: another-service
     command: python
@@ -100,6 +135,7 @@ services:
 - `workdir` (optional): Working directory for the process
 - `env` (optional): Environment variables as key-value pairs
 - `enabled` (optional): Auto-start flag, defaults to `true` if omitted
+- `schedule` (optional): Cron expression (5 fields: minute, hour, day, month, weekday). Presence of this field makes it a scheduled service instead of continuous.
 
 ## File Structure
 
@@ -134,9 +170,10 @@ service-manager/
 - `POST /api/services` - Create a new service
 - `PUT /api/services/{name}` - Update an existing service
 - `DELETE /api/services/{name}` - Delete a service
-- `POST /api/services/{name}/start` - Start a service
-- `POST /api/services/{name}/stop` - Stop a service
-- `POST /api/services/{name}/restart` - Restart a service
+- `POST /api/services/{name}/start` - Start a service (or register cron for scheduled)
+- `POST /api/services/{name}/stop` - Stop a service (or unregister cron for scheduled)
+- `POST /api/services/{name}/restart` - Restart a service (continuous only)
+- `POST /api/services/{name}/run-now` - Immediately run a scheduled service (409 if already running)
 
 ### WebSocket
 - `WS /api/services/{name}/logs/{stream}` - Stream logs (stream = stdout or stderr)
@@ -150,8 +187,15 @@ type ServiceStatus struct {
     Name      string
     Running   bool
     PID       int
-    Uptime    time.Duration
-    Restarts  int
+    Uptime    time.Duration  // For continuous services
+    Restarts  int            // For continuous services
+
+    // For scheduled services
+    Schedule      string
+    NextRunTime   *time.Time
+    LastRunTime   *time.Time
+    LastExitCode  *int
+    LastDuration  *time.Duration  // In milliseconds
 }
 ```
 
@@ -164,7 +208,8 @@ API responses also include the `enabled` field from the service configuration.
   - List of all services in YAML order
   - Each service shows:
     - Service name
-    - Status indicator (green dot = running, red dot = stopped)
+    - **Continuous services**: Status dot (green = running, red = stopped)
+    - **Scheduled services**: Clock icon (⏰) with orange left border
     - Disabled services appear grayed out with italic text
     - Click to select and view details
   - "Create New Service" button at the top
@@ -174,9 +219,14 @@ API responses also include the `enabled` field from the service configuration.
   - When no service selected: Welcome message or instructions
   - When service selected:
     - **Service Info Section**:
-      - Service name, status badge (running/stopped)
-      - Stats: PID, uptime, restart count, auto-start (Yes/No)
-      - Action buttons: Start, Stop, Restart, Delete
+      - Service name, status badge
+        - **Continuous**: Running (green) / Stopped (red)
+        - **Scheduled**: Scheduled (orange) / Running (green) / Disabled (red)
+      - **Stats for continuous services**: PID, uptime, restart count, auto-start (Yes/No)
+      - **Stats for scheduled services**: Schedule, Next Run, Last Run, Last Exit Code, Last Duration
+      - **Action buttons**:
+        - **Continuous**: Start, Stop, Restart, Edit, Delete
+        - **Scheduled**: Run Now, Enable/Disable toggle, Edit, Delete
       - Edit button to toggle edit mode
     - **Edit Mode** (when Edit clicked):
       - Form fields for: command, args (one per line), workdir, env vars (key=value, one per line)
@@ -203,9 +253,9 @@ API responses also include the `enabled` field from the service configuration.
 ### Startup
 1. Load `services.yaml` (creates empty config if not exists)
 2. Create `logs/` directory if not exists
-3. Initialize service manager
+3. Initialize service manager with cron scheduler
 4. Load config and record file modification time
-5. Start enabled services only
+5. Start enabled services (continuous processes or register cron jobs)
 6. Start config file watcher (5-second polling)
 7. Start web server on port 4321
 
@@ -217,21 +267,36 @@ API responses also include the `enabled` field from the service configuration.
 5. Start goroutine to monitor process
 6. Update service status
 
-### Service Crash Detection
+### Service Crash Detection (Continuous Services Only)
 1. Monitor goroutine detects process exit
 2. Log the crash
 3. Wait 1 second (backoff)
 4. Restart the service (only if enabled)
 5. Increment restart counter
 
+### Scheduled Service Execution
+1. Cron scheduler triggers at scheduled time
+2. Check if service is already running (overlap prevention)
+3. If running, skip this execution and log warning to stderr
+4. If not running:
+   - Record start time
+   - Log "Starting scheduled run" to stderr
+   - Start process with configured command/args/env/workdir
+   - Wait for process to complete
+   - Record end time, exit code, duration
+   - Log "Exited with code X" to stderr
+   - Update last run statistics (time, exit code, duration)
+5. Calculate and update next run time
+
 ### Config File Watching
 1. Background goroutine checks file every 5 seconds
 2. Compare current modification time with last known time
 3. If file is newer:
    - Reload configuration
-   - Stop services removed from config
-   - Restart services with changed config (if enabled)
-   - Start new services (if enabled)
+   - Stop/unregister services removed from config
+   - Restart/reschedule services with changed config (if enabled)
+   - Start/register new services (if enabled)
+   - For scheduled services: unregister old cron job, register new one if schedule changed
    - Preserve service order from YAML
    - Update modification time
 4. UI automatically picks up changes (2-second polling + immediate updates on actions)
@@ -264,9 +329,10 @@ API responses also include the `enabled` field from the service configuration.
 8. Return success response
 
 ### Service Start/Stop (Persistent)
-- **Start**: Sets `enabled: true` in YAML, then starts the process
-- **Stop**: Sets `enabled: false` in YAML, then stops the process
-- **Restart**: Stops and starts without changing enabled flag
+- **Start**: Sets `enabled: true` in YAML, then starts the process (or registers cron job)
+- **Stop**: Sets `enabled: false` in YAML, then stops the process (or unregisters cron job)
+- **Restart**: Stops and starts without changing enabled flag (continuous services only)
+- **Run Now**: Immediately runs a scheduled service (returns 409 if already running)
 - Changes persist across service manager restarts
 
 ### Service Deletion
@@ -280,7 +346,11 @@ API responses also include the `enabled` field from the service configuration.
 
 ## Error Handling
 - Invalid YAML on startup: Log error and exit
-- Service start failure: Log error, mark as stopped, retry after 1s
+- Invalid cron expression: Log error and mark service as disabled
+- Service start failure: Log error, mark as stopped, retry after 1s (continuous only)
+- Scheduled service overlap: Skip run, log warning to stderr
+- Run-now on already running scheduled service: Return 409 Conflict
+- Restart on scheduled service: Return 400 Bad Request (not supported)
 - Log file write failure: Log to stderr, continue running
 - WebSocket disconnect: Clean up, remove from broadcast list
 - Service creation/update with invalid config: Return 400 Bad Request with error details
@@ -290,10 +360,11 @@ API responses also include the `enabled` field from the service configuration.
 
 ## Implementation Notes
 - Use `sync.RWMutex` for concurrent access to service map and order slice
-- Use channels for graceful shutdown of config watcher
+- Use channels for graceful shutdown of config watcher and cron scheduler
 - Circular buffer: Fixed-size ring buffer (10KB)
 - Process monitoring: Use `cmd.Wait()` to detect exit
-- All services run in separate goroutines
+- All continuous services run in separate goroutines
+- Scheduled services execute synchronously in cron job handler
 - Config watcher runs in background goroutine with 5-second ticker
 - Web server runs in main goroutine with graceful shutdown support
 - **Service Order Preservation**: Maintain separate slice to preserve YAML order
@@ -308,4 +379,10 @@ API responses also include the `enabled` field from the service configuration.
   - Pointer to bool allows nil = enabled (backwards compatibility)
   - `IsEnabled()` helper treats nil and true as enabled
   - Start/Stop operations update YAML immediately
-  - Auto-restart respects enabled flag
+  - Auto-restart respects enabled flag (continuous services only)
+- **Cron Scheduling**:
+  - Use `robfig/cron/v3` with 5-field parser
+  - Each scheduled service gets unique cron entry ID for removal
+  - Cron jobs call service run method which handles overlap prevention
+  - Next run time calculated from cron schedule
+  - Scheduler started on manager initialization, stopped on shutdown

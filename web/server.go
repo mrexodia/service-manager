@@ -20,13 +20,15 @@ var upgrader = websocket.Upgrader{
 // Server represents the web server
 type Server struct {
 	manager *manager.Manager
+	host    string
 	port    int
 }
 
 // New creates a new web server
-func New(mgr *manager.Manager, port int) *Server {
+func New(mgr *manager.Manager, host string, port int) *Server {
 	return &Server{
 		manager: mgr,
+		host:    host,
 		port:    port,
 	}
 }
@@ -37,8 +39,8 @@ func (s *Server) Start() error {
 	http.HandleFunc("/api/services/", s.handleServiceActions)
 	http.HandleFunc("/", s.handleStatic)
 
-	addr := fmt.Sprintf(":%d", s.port)
-	fmt.Printf("Starting web server on http://localhost%s\n", addr)
+	addr := fmt.Sprintf("%s:%d", s.host, s.port)
+	fmt.Printf("Starting web server on http://%s\n", addr)
 	return http.ListenAndServe(addr, nil)
 }
 
@@ -91,6 +93,8 @@ func (s *Server) handleServiceActions(w http.ResponseWriter, r *http.Request) {
 			s.stopService(w, r, serviceName)
 		case "restart":
 			s.restartService(w, r, serviceName)
+		case "run-now":
+			s.runNowService(w, r, serviceName)
 		default:
 			http.Error(w, "Unknown action", http.StatusNotFound)
 		}
@@ -114,14 +118,27 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 	statuses := make([]interface{}, len(services))
 	for i, svc := range services {
 		status := svc.GetStatus()
-		statuses[i] = map[string]interface{}{
-			"name":     status.Name,
-			"running":  status.Running,
-			"pid":      status.PID,
-			"uptime":   status.Uptime.Seconds(),
-			"restarts": status.Restarts,
-			"enabled":  svc.Config.IsEnabled(),
+		item := map[string]interface{}{
+			"name":         status.Name,
+			"running":      status.Running,
+			"pid":          status.PID,
+			"uptime":       status.Uptime.Seconds(),
+			"restarts":     status.Restarts,
+			"enabled":      svc.Config.IsEnabled(),
+			"schedule":     svc.Config.Schedule,
+			"lastRunTime":  status.LastRunTime,
+			"lastExitCode": status.LastExitCode,
+			"lastDuration": status.LastDuration.Seconds(),
 		}
+
+		// Add next run time for scheduled services
+		if svc.Config.IsScheduled() {
+			if nextRun, ok := s.manager.GetNextRunTime(status.Name); ok {
+				item["nextRunTime"] = nextRun
+			}
+		}
+
+		statuses[i] = item
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -138,16 +155,27 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request, name string)
 
 	status := svc.GetStatus()
 	response := map[string]interface{}{
-		"name":     svc.Config.Name,
-		"command":  svc.Config.Command,
-		"args":     svc.Config.Args,
-		"workdir":  svc.Config.Workdir,
-		"env":      svc.Config.Env,
-		"running":  status.Running,
-		"pid":      status.PID,
-		"uptime":   status.Uptime.Seconds(),
-		"restarts": status.Restarts,
-		"enabled":  svc.Config.IsEnabled(),
+		"name":         svc.Config.Name,
+		"command":      svc.Config.Command,
+		"args":         svc.Config.Args,
+		"workdir":      svc.Config.Workdir,
+		"env":          svc.Config.Env,
+		"running":      status.Running,
+		"pid":          status.PID,
+		"uptime":       status.Uptime.Seconds(),
+		"restarts":     status.Restarts,
+		"enabled":      svc.Config.IsEnabled(),
+		"schedule":     svc.Config.Schedule,
+		"lastRunTime":  status.LastRunTime,
+		"lastExitCode": status.LastExitCode,
+		"lastDuration": status.LastDuration.Seconds(),
+	}
+
+	// Add next run time for scheduled services
+	if svc.Config.IsScheduled() {
+		if nextRun, ok := s.manager.GetNextRunTime(svc.Config.Name); ok {
+			response["nextRunTime"] = nextRun
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -270,6 +298,41 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request, name str
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "restarted"})
+}
+
+// runNowService runs a scheduled service immediately
+func (s *Server) runNowService(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	svc, err := s.manager.GetService(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Check if it's a scheduled service
+	if !svc.Config.IsScheduled() {
+		http.Error(w, "Service is not a scheduled service", http.StatusBadRequest)
+		return
+	}
+
+	// Check if already running (overlap prevention)
+	if svc.IsRunning() {
+		http.Error(w, "Service is already running", http.StatusConflict)
+		return
+	}
+
+	// Start the service
+	if err := svc.Start(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
 // streamLogs streams logs via WebSocket

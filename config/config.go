@@ -7,18 +7,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// GlobalConfig represents global service manager settings
+type GlobalConfig struct {
+	Host                string `yaml:"host,omitempty"`
+	Port                int    `yaml:"port,omitempty"`
+	FailureWebhookURL   string `yaml:"failure_webhook_url,omitempty"`
+	FailureThreshold    int    `yaml:"failure_threshold,omitempty"`    // Number of failures before webhook triggers
+}
+
 // ServiceConfig represents a single service configuration
 type ServiceConfig struct {
-	Name    string            `yaml:"name"`
-	Command string            `yaml:"command"`
-	Args    []string          `yaml:"args,omitempty"`
-	Workdir string            `yaml:"workdir,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty"`
-	Enabled *bool             `yaml:"enabled,omitempty"` // nil means true for backwards compatibility
+	Name     string            `yaml:"name"`
+	Command  string            `yaml:"command"`
+	Args     []string          `yaml:"args,omitempty"`
+	Workdir  string            `yaml:"workdir,omitempty"`
+	Env      map[string]string `yaml:"env,omitempty"`
+	Enabled  *bool             `yaml:"enabled,omitempty"`  // nil means true for backwards compatibility
+	Schedule string            `yaml:"schedule,omitempty"` // Cron schedule (empty = continuous service)
 }
 
 // Config represents the entire configuration file
 type Config struct {
+	Global   GlobalConfig    `yaml:"config,omitempty"`
 	Services []ServiceConfig `yaml:"services"`
 }
 
@@ -34,6 +44,17 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Set defaults
+	if cfg.Global.Host == "" {
+		cfg.Global.Host = "0.0.0.0"
+	}
+	if cfg.Global.Port == 0 {
+		cfg.Global.Port = 4321
+	}
+	if cfg.Global.FailureThreshold == 0 {
+		cfg.Global.FailureThreshold = 3 // Default: trigger webhook after 3 consecutive failures
 	}
 
 	return &cfg, nil
@@ -235,6 +256,11 @@ func (sc *ServiceConfig) IsEnabled() bool {
 		return true
 	}
 	return *sc.Enabled
+}
+
+// IsScheduled returns true if the service has a cron schedule
+func (sc *ServiceConfig) IsScheduled() bool {
+	return sc.Schedule != ""
 }
 
 // findServicesNode locates the services array node in the YAML tree
