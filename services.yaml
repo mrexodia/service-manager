@@ -1,0 +1,24 @@
+# Service Manager Configuration
+# This is an example configuration file
+# You can add, edit, and delete services via the web UI
+
+services:
+  # Example: A simple ping service
+  - name: ping-example
+    command: ping
+    args:
+      - localhost
+      - -t
+    workdir: ""
+    env: {}
+
+  # Example: A slower timestamp service (prints every 5 seconds)
+  # Uncomment to enable:
+  - name: timestamp-example
+    command: powershell
+    args:
+      - -Command
+      - while($true) { Get-Date; Start-Sleep -Seconds 5 }
+    workdir: ""
+    env:
+      EXAMPLE_VAR: "hello"

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service Manager</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Left Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Service Manager</h1>
+                <button id="createServiceBtn" class="btn btn-primary">+ Create New Service</button>
+            </div>
+            <div class="service-list" id="serviceList">
+                <!-- Services will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="main-panel">
+            <div id="welcomeView" class="welcome-view">
+                <h2>Welcome to Service Manager</h2>
+                <p>Select a service from the list to view details and logs, or create a new service to get started.</p>
+            </div>
+
+            <div id="serviceView" class="service-view" style="display: none;">
+                <!-- Service Info Section -->
+                <div class="service-header">
+                    <div class="service-title">
+                        <h2 id="serviceName"></h2>
+                        <span class="status-badge" id="statusBadge"></span>
+                    </div>
+                    <div class="service-actions">
+                        <button id="startBtn" class="btn btn-success">Start</button>
+                        <button id="stopBtn" class="btn btn-danger">Stop</button>
+                        <button id="restartBtn" class="btn btn-warning">Restart</button>
+                        <button id="editBtn" class="btn btn-secondary">Edit</button>
+                        <button id="deleteBtn" class="btn btn-danger">Delete</button>
+                    </div>
+                </div>
+
+                <div class="service-stats" id="serviceStats">
+                    <!-- Stats will be loaded here -->
+                </div>
+
+                <!-- Edit Form (hidden by default) -->
+                <div id="editForm" class="edit-form" style="display: none;">
+                    <h3>Edit Service</h3>
+                    <form id="serviceForm">
+                        <div class="form-group">
+                            <label for="editName">Service Name:</label>
+                            <input type="text" id="editName" required disabled>
+                        </div>
+                        <div class="form-group">
+                            <label for="editCommand">Command:</label>
+                            <input type="text" id="editCommand" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="editArgs">Arguments (one per line):</label>
+                            <textarea id="editArgs" rows="4"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="editWorkdir">Working Directory:</label>
+                            <input type="text" id="editWorkdir">
+                        </div>
+                        <div class="form-group">
+                            <label for="editEnv">Environment Variables (KEY=VALUE, one per line):</label>
+                            <textarea id="editEnv" rows="4"></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Save</button>
+                            <button type="button" id="cancelEditBtn" class="btn btn-secondary">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Log Viewer Section -->
+                <div class="log-section">
+                    <div class="log-tabs">
+                        <button class="log-tab active" data-stream="stdout">stdout</button>
+                        <button class="log-tab" data-stream="stderr">stderr</button>
+                    </div>
+                    <div class="log-viewer">
+                        <pre id="logContent"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Create Service Form -->
+            <div id="createView" class="create-view" style="display: none;">
+                <h2>Create New Service</h2>
+                <form id="createServiceForm">
+                    <div class="form-group">
+                        <label for="createName">Service Name:</label>
+                        <input type="text" id="createName" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="createCommand">Command:</label>
+                        <input type="text" id="createCommand" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="createArgs">Arguments (one per line):</label>
+                        <textarea id="createArgs" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="createWorkdir">Working Directory:</label>
+                        <input type="text" id="createWorkdir">
+                    </div>
+                    <div class="form-group">
+                        <label for="createEnv">Environment Variables (KEY=VALUE, one per line):</label>
+                        <textarea id="createEnv" rows="4"></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Create</button>
+                        <button type="button" id="cancelCreateBtn" class="btn btn-secondary">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
