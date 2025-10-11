@@ -156,7 +156,7 @@ func (b *Broadcaster) Broadcast(msg string) {
 
 // New creates a new service instance
 func New(cfg config.ServiceConfig) *Service {
-	return &Service{
+	svc := &Service{
 		Config:          cfg,
 		stdoutBuf:       NewCircularBuffer(logBufferSize),
 		stderrBuf:       NewCircularBuffer(logBufferSize),
@@ -164,6 +164,11 @@ func New(cfg config.ServiceConfig) *Service {
 		stderrBroadcast: NewBroadcaster(),
 		stopChan:        make(chan struct{}),
 	}
+
+	// Load existing log files into buffers
+	svc.loadExistingLogs()
+
+	return svc
 }
 
 // SetFailureCallback sets the callback to be called when the service fails
@@ -222,13 +227,11 @@ func (s *Service) Start() error {
 	s.pid = s.cmd.Process.Pid
 	s.startTime = time.Now()
 
-	// Log start time for scheduled services
-	if s.Config.IsScheduled() && s.stderrFile != nil {
-		logMsg := fmt.Sprintf("[%s] Starting scheduled task: %s\n",
-			s.startTime.Format("2006-01-02 15:04:05"), s.Config.Name)
-		s.stderrFile.WriteString(logMsg)
-		s.stderrBuf.Write([]byte(logMsg))
-		s.stderrBroadcast.Broadcast(logMsg)
+	// Log service start
+	if s.Config.IsScheduled() {
+		s.logServiceEvent(fmt.Sprintf("Starting scheduled service '%s' (PID: %d)", s.Config.Name, s.pid))
+	} else {
+		s.logServiceEvent(fmt.Sprintf("Starting continuous service '%s' (PID: %d)", s.Config.Name, s.pid))
 	}
 
 	// Start log readers
@@ -249,6 +252,9 @@ func (s *Service) Stop() error {
 	if !s.running {
 		return fmt.Errorf("service %s is not running", s.Config.Name)
 	}
+
+	// Log before stopping
+	s.logServiceEvent(fmt.Sprintf("Stopping service '%s' (PID: %d)", s.Config.Name, s.pid))
 
 	// Signal to stop auto-restart (only close once)
 	s.stopOnce.Do(func() {
@@ -376,6 +382,27 @@ func (s *Service) WriteStderrLog(msg string) {
 	s.stderrBroadcast.Broadcast(msg)
 }
 
+// logServiceEvent writes a service manager event to both stdout and stderr logs
+// Format: [service-manager][YYYY-MM-DD HH:MM:SS] message
+func (s *Service) logServiceEvent(message string) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	logMsg := fmt.Sprintf("[service-manager][%s] %s\n", timestamp, message)
+
+	// Write to stdout
+	if s.stdoutFile != nil {
+		s.stdoutFile.WriteString(logMsg)
+	}
+	s.stdoutBuf.Write([]byte(logMsg))
+	s.stdoutBroadcast.Broadcast(logMsg)
+
+	// Write to stderr
+	if s.stderrFile != nil {
+		s.stderrFile.WriteString(logMsg)
+	}
+	s.stderrBuf.Write([]byte(logMsg))
+	s.stderrBroadcast.Broadcast(logMsg)
+}
+
 // openLogFiles opens the log files for writing
 func (s *Service) openLogFiles() error {
 	if err := os.MkdirAll("logs", 0755); err != nil {
@@ -409,6 +436,62 @@ func (s *Service) closeLogFiles() {
 	if s.stderrFile != nil {
 		s.stderrFile.Close()
 		s.stderrFile = nil
+	}
+}
+
+// loadExistingLogs loads the last portion of existing log files into buffers
+func (s *Service) loadExistingLogs() {
+	stdoutPath := filepath.Join("logs", fmt.Sprintf("%s-stdout.log", s.Config.Name))
+	stderrPath := filepath.Join("logs", fmt.Sprintf("%s-stderr.log", s.Config.Name))
+
+	s.loadLogFile(stdoutPath, s.stdoutBuf)
+	s.loadLogFile(stderrPath, s.stderrBuf)
+}
+
+// loadLogFile loads the last portion of a log file into a buffer
+func (s *Service) loadLogFile(path string, buf *CircularBuffer) {
+	file, err := os.Open(path)
+	if err != nil {
+		// File doesn't exist or can't be opened, that's okay
+		return
+	}
+	defer file.Close()
+
+	// Get file size
+	stat, err := file.Stat()
+	if err != nil {
+		return
+	}
+
+	fileSize := stat.Size()
+	if fileSize == 0 {
+		return
+	}
+
+	// Read the last logBufferSize bytes (or entire file if smaller)
+	readSize := int64(logBufferSize)
+	offset := int64(0)
+	if fileSize > readSize {
+		offset = fileSize - readSize
+	} else {
+		readSize = fileSize
+	}
+
+	// Seek to the offset
+	if _, err := file.Seek(offset, 0); err != nil {
+		return
+	}
+
+	// Read the data
+	data := make([]byte, readSize)
+	n, err := io.ReadFull(file, data)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return
+	}
+
+	// Write to buffer
+	if n > 0 {
+		buf.Write(data[:n])
 	}
 }
 
@@ -455,15 +538,13 @@ func (s *Service) monitor() {
 	s.lastDuration = duration
 	s.lastError = err
 
-	// Log to stderr for scheduled services BEFORE closing files
-	if s.Config.IsScheduled() && s.stderrFile != nil {
-		endTime := time.Now()
-		logMsg := fmt.Sprintf("[%s] Task ended with exit code: %d (duration: %v)\n",
-			endTime.Format("2006-01-02 15:04:05"), exitCode, duration.Round(time.Second))
-		s.stderrFile.WriteString(logMsg)
-		s.stderrBuf.Write([]byte(logMsg))
-		s.stderrBroadcast.Broadcast(logMsg)
+	// Log service exit BEFORE closing files
+	serviceType := "continuous"
+	if s.Config.IsScheduled() {
+		serviceType = "scheduled"
 	}
+	s.logServiceEvent(fmt.Sprintf("Service '%s' (%s) exited with code %d (duration: %v)",
+		s.Config.Name, serviceType, exitCode, duration.Round(time.Millisecond)))
 
 	s.closeLogFiles()
 

@@ -410,6 +410,7 @@ body {
 .clock-icon {
     font-size: 14px;
     opacity: 0.9;
+    margin: -5px;
 }
 
 .service-item.scheduled {

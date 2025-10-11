@@ -2,6 +2,7 @@ let selectedService = null;
 let currentStream = 'stdout';
 let logWebSocket = null;
 let refreshInterval = null;
+let lastServicesSnapshot = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -47,7 +48,18 @@ async function loadServices() {
         const response = await fetch('/api/services');
         const services = await response.json();
 
-        renderServiceList(services);
+        // Only rebuild the list if services have changed
+        const currentSnapshot = JSON.stringify(services.map(s => ({
+            name: s.name,
+            running: s.running,
+            enabled: s.enabled,
+            schedule: s.schedule
+        })));
+
+        if (currentSnapshot !== lastServicesSnapshot) {
+            renderServiceList(services);
+            lastServicesSnapshot = currentSnapshot;
+        }
 
         // Update current service status if one is selected
         if (selectedService) {
@@ -61,7 +73,7 @@ async function loadServices() {
     }
 }
 
-// Render service list
+// Render service list (simple rebuild)
 function renderServiceList(services) {
     const list = document.getElementById('serviceList');
     list.innerHTML = '';
