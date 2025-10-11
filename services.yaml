@@ -37,7 +37,8 @@ services:
       - echo Cleanup completed at %DATE% %TIME%
     schedule: "*/5 * * * *" # Every 5 minutes
     enabled: true
-  - name: edit-test
+  # Example: One-off service that run once on startup
+  - name: one-off
     command: uv
     args:
       - --help

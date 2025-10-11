@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"service-manager/config"
-	"service-manager/service"
-	"service-manager/webhook"
+	"github.com/mrexodia/service-manager/config"
+	"github.com/mrexodia/service-manager/service"
+	"github.com/mrexodia/service-manager/webhook"
 )
 
 // Manager manages all services

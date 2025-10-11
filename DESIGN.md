@@ -153,14 +153,43 @@ service-manager/
 │   └── static/
 │       ├── index.html     # Web UI
 │       ├── style.css
-│       └── app.js
+│       ├── app.js
+│       └── favicon.ico    # Icon for web UI and Windows executable
 ├── services.yaml          # Service definitions
+├── rsrc.syso              # Windows resource file (generated, contains embedded icon)
 └── logs/                  # Created at runtime
     ├── service1-stdout.log
     ├── service1-stderr.log
     ├── service2-stdout.log
     └── service2-stderr.log
 ```
+
+## Building
+
+### Standard Build
+
+```bash
+go build
+```
+
+### Windows Executable Icon
+
+The Windows executable icon is embedded from `web/static/favicon.ico` using the `rsrc.syso` resource file. This file is already generated and included in the repository.
+
+If you need to change the icon:
+
+```bash
+# Install rsrc tool (one-time setup)
+go install github.com/akavel/rsrc@latest
+
+# Generate resource file from favicon.ico
+rsrc -ico web/static/favicon.ico -o rsrc.syso
+
+# Build normally (rsrc.syso is automatically included)
+go build
+```
+
+The `rsrc.syso` file is automatically detected and linked by the Go compiler during Windows builds.
 
 ## API Endpoints
 

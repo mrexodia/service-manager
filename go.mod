@@ -1,4 +1,4 @@
-module service-manager
+module github.com/mrexodia/service-manager
 
 go 1.25.1
 

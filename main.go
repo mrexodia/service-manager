@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"service-manager/config"
-	"service-manager/manager"
-	"service-manager/web"
+	"github.com/mrexodia/service-manager/config"
+	"github.com/mrexodia/service-manager/manager"
+	"github.com/mrexodia/service-manager/web"
 )
 
 func main() {

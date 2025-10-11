@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"service-manager/config"
+	"github.com/mrexodia/service-manager/config"
 )
 
 const (

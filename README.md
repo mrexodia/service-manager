@@ -1,43 +1,31 @@
 # Service Manager
 
-A simple service manager written in Go with a web UI for managing, monitoring, and logging multiple services.
+![](.github/screenshot.png)
+
+A simple service manager with a web-based management portal for running and monitoring multiple services.
 
 ## Features
 
-- Define services in YAML (command, args, working directory, environment variables)
-- **Two service types**:
-  - **Continuous services**: Long-running processes with auto-restart on crash
-  - **Scheduled services**: Cron-based task scheduling
-- Auto-start enabled services on manager startup
-- Auto-restart services on crash (continuous services only)
-- Cron scheduling with standard cron syntax
-- Persistent enable/disable state via YAML
-- Automatic config reload when `services.yaml` changes (checked every 5 seconds)
-- Web UI on port 4321
-- Live log streaming (stdout/stderr)
-- Create, edit, and delete services via web UI
-- YAML comment preservation when editing config
-- Service control (start/stop/restart for continuous, run-now for scheduled)
+- **Continuous services**: Long-running processes with auto-restart on crash
+- **Scheduled services**: Cron-based task scheduling
+- **Web management UI**: Control, monitor, and view live logs on port 4321
+- **Auto-reload**: Detects config changes and applies them automatically
+- **Flexible configuration**: Define services in YAML with custom commands, args, environment variables, and working directories
 
 ## Installation
 
-Build the service manager:
+Install directly from GitHub:
 
 ```bash
-go build -o service-manager.exe
+go install github.com/mrexodia/service-manager@latest
 ```
 
-**Note**: The Windows executable icon is embedded from `web/static/favicon.ico`. If you change the icon, regenerate the resource file:
+Or build from source:
 
 ```bash
-# Install rsrc tool (one-time setup)
-go install github.com/akavel/rsrc@latest
-
-# Generate resource file
-rsrc -ico web/static/favicon.ico -o rsrc.syso
-
-# Build
-go build -o service-manager.exe
+git clone https://github.com/mrexodia/service-manager.git
+cd service-manager
+go build
 ```
 
 ## Configuration
@@ -79,24 +67,12 @@ services:
 
 ### Cron Schedule Syntax
 
-Scheduled services use standard cron syntax with 5 fields:
-
-```
-* * * * *
-│ │ │ │ │
-│ │ │ │ └─ Day of week (0-6, Sunday=0)
-│ │ │ └─── Month (1-12)
-│ │ └───── Day of month (1-31)
-│ └─────── Hour (0-23)
-└───────── Minute (0-59)
-```
+Scheduled services use standard cron syntax with 5 fields (minute, hour, day, month, weekday). See [cron.help](https://cron.help/) for interactive examples and syntax help.
 
 Examples:
 - `*/5 * * * *` - Every 5 minutes
-- `0 * * * *` - Every hour at minute 0
 - `0 2 * * *` - Daily at 2:00 AM
 - `0 0 * * 0` - Weekly on Sunday at midnight
-- `30 14 1 * *` - Monthly on the 1st at 2:30 PM
 
 ### Auto-Reload
 
@@ -106,8 +82,9 @@ The service manager monitors `services.yaml` and automatically reloads when chan
 
 1. Start the service manager:
    ```bash
-   ./service-manager.exe
+   service-manager
    ```
+   Or if you built from source: `go run .` or `./service-manager`
 
 2. Open your browser to `http://localhost:4321`
 

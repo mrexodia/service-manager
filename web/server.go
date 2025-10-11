@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"service-manager/config"
-	"service-manager/manager"
+	"github.com/mrexodia/service-manager/config"
+	"github.com/mrexodia/service-manager/manager"
 )
 
 // Server represents the web server
