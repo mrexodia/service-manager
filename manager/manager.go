@@ -22,6 +22,7 @@ type Manager struct {
 	globalConfig      config.GlobalConfig
 	webhookNotifier   *webhook.Notifier
 	webhookSent       map[string]bool // Track if webhook was sent for a service (reset on success)
+	webhookWg         sync.WaitGroup  // Track pending webhook goroutines
 	mu                sync.RWMutex
 	stopWatchChan     chan struct{}
 }
@@ -205,10 +206,10 @@ func (m *Manager) GetAllServices() []*service.Service {
 	return services
 }
 
-// StartService starts a service by name and sets enabled=true in YAML
-func (m *Manager) StartService(name string) error {
-	svc, err := m.GetService(name)
-	if err != nil {
+// EnableService sets a service as enabled in YAML
+func (m *Manager) EnableService(name string) error {
+	// Verify service exists
+	if _, err := m.GetService(name); err != nil {
 		return err
 	}
 
@@ -217,19 +218,41 @@ func (m *Manager) StartService(name string) error {
 		return fmt.Errorf("failed to update enabled flag: %w", err)
 	}
 
-	return svc.Start()
+	// Reload config to apply changes
+	return m.ReloadConfig()
 }
 
-// StopService stops a service by name and sets enabled=false in YAML
-func (m *Manager) StopService(name string) error {
-	svc, err := m.GetService(name)
-	if err != nil {
+// DisableService sets a service as disabled in YAML
+func (m *Manager) DisableService(name string) error {
+	// Verify service exists
+	if _, err := m.GetService(name); err != nil {
 		return err
 	}
 
 	// Update enabled flag in YAML
 	if err := config.SetServiceEnabled(name, false); err != nil {
 		return fmt.Errorf("failed to update enabled flag: %w", err)
+	}
+
+	// Reload config to apply changes (this will stop the service if running)
+	return m.ReloadConfig()
+}
+
+// StartService starts a service by name (runtime control only)
+func (m *Manager) StartService(name string) error {
+	svc, err := m.GetService(name)
+	if err != nil {
+		return err
+	}
+
+	return svc.Start()
+}
+
+// StopService stops a service by name (runtime control only)
+func (m *Manager) StopService(name string) error {
+	svc, err := m.GetService(name)
+	if err != nil {
+		return err
 	}
 
 	return svc.Stop()
@@ -402,6 +425,21 @@ func (m *Manager) StopAll() {
 	for _, svc := range m.services {
 		svc.Stop()
 	}
+
+	// Wait for pending webhooks with timeout
+	done := make(chan struct{})
+	go func() {
+		m.webhookWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All webhooks completed
+	case <-time.After(5 * time.Second):
+		// Timeout waiting for webhooks
+		fmt.Fprintf(os.Stderr, "Warning: Timed out waiting for pending webhooks\n")
+	}
 }
 
 // handleServiceFailure is called when a service fails or succeeds (to reset state)
@@ -417,8 +455,8 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 	}
 
 	// Check if we should send webhook
-	threshold := m.globalConfig.FailureThreshold
-	if consecutiveFailures < threshold {
+	maxRetries := m.globalConfig.MaxFailureRetries
+	if consecutiveFailures < maxRetries {
 		return // Not enough failures yet
 	}
 
@@ -442,7 +480,9 @@ func (m *Manager) handleServiceFailure(serviceName string, consecutiveFailures i
 			payload.ErrorMessage = err.Error()
 		}
 
+		m.webhookWg.Add(1)
 		go func() {
+			defer m.webhookWg.Done()
 			if err := m.webhookNotifier.NotifyFailure(payload); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to send webhook for service %s: %v\n", serviceName, err)
 			} else {

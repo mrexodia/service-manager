@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Service Manager</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -37,11 +38,12 @@
                         <button id="startBtn" class="btn btn-success">Start</button>
                         <button id="stopBtn" class="btn btn-danger">Stop</button>
                         <button id="restartBtn" class="btn btn-warning">Restart</button>
-                        <button id="runNowBtn" class="btn btn-run-now" style="display: none;">Run Now</button>
-                        <div id="toggleContainer" class="toggle-switch" style="display: none;">
-                            <input type="checkbox" id="enableToggle" onchange="handleToggleEnabled()">
+                        <button id="runNowBtn" class="btn btn-success" style="display: none;">Run Now</button>
+                        <span class="action-separator">|</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="enabledCheckbox" onchange="handleEnabledChange()">
                             <span class="toggle-label">Enabled</span>
-                        </div>
+                        </label>
                         <button id="editBtn" class="btn btn-secondary">Edit</button>
                         <button id="deleteBtn" class="btn btn-danger">Delete</button>
                     </div>

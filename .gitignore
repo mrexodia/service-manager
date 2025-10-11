@@ -1,3 +1,5 @@
 logs/
 *.exe
 /service-manager
+*.tmp
+rsrc.syso

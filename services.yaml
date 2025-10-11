@@ -4,11 +4,10 @@
 
 # Global configuration
 config:
-  host: "0.0.0.0"           # Listen address (default: 0.0.0.0)
-  port: 4321                # Web UI port (default: 4321)
-  failure_webhook_url: ""   # HTTP POST webhook for service failures (empty = disabled)
-  failure_threshold: 3      # Number of consecutive failures before webhook triggers (default: 3)
-
+  host: "127.0.0.1" # Listen address (default: 127.0.0.1)
+  port: 4321 # Web UI port (default: 4321)
+  failure_webhook_url: "" # HTTP POST webhook for service failures (empty = disabled)
+  failure_threshold: 3 # Number of consecutive failures before webhook triggers (default: 3)
 services:
   # Example: A simple ping service
   - name: ping-example
@@ -18,7 +17,7 @@ services:
       - -t
     workdir: ""
     env: {}
-
+    enabled: false
   # Example: A slower timestamp service (prints every 5 seconds)
   # Uncomment to enable:
   - name: timestamp-example
@@ -29,12 +28,17 @@ services:
     workdir: ""
     env:
       EXAMPLE_VAR: "hello"
-
+    enabled: true
   # Example: Scheduled service that runs every 5 minutes
   - name: hourly-cleanup
     command: cmd
     args:
       - /c
       - echo Cleanup completed at %DATE% %TIME%
-    schedule: "*/5 * * * *"  # Every 5 minutes
+    schedule: "*/5 * * * *" # Every 5 minutes
+    enabled: true
+  - name: edit-test
+    command: uv
+    args:
+      - --help
     enabled: true

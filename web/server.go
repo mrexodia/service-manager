@@ -11,26 +11,44 @@ import (
 	"service-manager/manager"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for simplicity
-	},
-}
-
 // Server represents the web server
 type Server struct {
-	manager *manager.Manager
-	host    string
-	port    int
+	manager  *manager.Manager
+	host     string
+	port     int
+	upgrader websocket.Upgrader
 }
 
 // New creates a new web server
 func New(mgr *manager.Manager, host string, port int) *Server {
-	return &Server{
+	s := &Server{
 		manager: mgr,
 		host:    host,
 		port:    port,
 	}
+
+	// Configure WebSocket upgrader with proper CORS checking
+	s.upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			// In production, you should check against allowed origins
+			// For now, allow same-origin and localhost for development
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // Allow no-origin (same-origin) requests
+			}
+
+			// Allow localhost and same host connections with configured port
+			host := r.Host
+			portStr := fmt.Sprintf("%d", port)
+			return origin == "http://"+host ||
+			       origin == "https://"+host ||
+			       origin == "http://localhost" ||
+			       origin == "http://localhost:"+portStr ||
+			       origin == "http://127.0.0.1:"+portStr
+		},
+	}
+
+	return s
 }
 
 // Start starts the web server
@@ -93,6 +111,10 @@ func (s *Server) handleServiceActions(w http.ResponseWriter, r *http.Request) {
 			s.stopService(w, r, serviceName)
 		case "restart":
 			s.restartService(w, r, serviceName)
+		case "enable":
+			s.enableService(w, r, serviceName)
+		case "disable":
+			s.disableService(w, r, serviceName)
 		case "run-now":
 			s.runNowService(w, r, serviceName)
 		default:
@@ -300,6 +322,38 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request, name str
 	json.NewEncoder(w).Encode(map[string]string{"status": "restarted"})
 }
 
+// enableService enables a service
+func (s *Server) enableService(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := s.manager.EnableService(name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "enabled"})
+}
+
+// disableService disables a service
+func (s *Server) disableService(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := s.manager.DisableService(name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "disabled"})
+}
+
 // runNowService runs a scheduled service immediately
 func (s *Server) runNowService(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodPost {
@@ -349,7 +403,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, serviceName,
 	}
 
 	// Upgrade to WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}

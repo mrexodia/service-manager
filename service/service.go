@@ -15,7 +15,7 @@ import (
 
 const (
 	logBufferSize = 10 * 1024 // 10KB circular buffer
-	restartDelay  = 1 * time.Second
+	restartDelay  = 5 * time.Second
 )
 
 // FailureCallback is called when a service fails
@@ -23,12 +23,12 @@ type FailureCallback func(serviceName string, consecutiveFailures int, exitCode 
 
 // Service represents a managed service instance
 type Service struct {
-	Config   config.ServiceConfig
-	cmd      *exec.Cmd
-	running  bool
-	pid      int
+	Config    config.ServiceConfig
+	cmd       *exec.Cmd
+	running   bool
+	pid       int
 	startTime time.Time
-	restarts int
+	restarts  int
 
 	// Scheduled service tracking
 	lastRunTime  time.Time
@@ -49,8 +49,9 @@ type Service struct {
 	stdoutBroadcast *Broadcaster
 	stderrBroadcast *Broadcaster
 
-	mu sync.RWMutex
+	mu       sync.RWMutex
 	stopChan chan struct{}
+	stopOnce sync.Once // Ensures stopChan is only closed once
 }
 
 // CircularBuffer is a fixed-size ring buffer for log lines
@@ -102,6 +103,7 @@ func (cb *CircularBuffer) Read() []byte {
 // Broadcaster broadcasts messages to multiple channels
 type Broadcaster struct {
 	clients map[chan string]bool
+	closed  map[chan string]bool // Track closed channels
 	mu      sync.RWMutex
 }
 
@@ -109,6 +111,7 @@ type Broadcaster struct {
 func NewBroadcaster() *Broadcaster {
 	return &Broadcaster{
 		clients: make(map[chan string]bool),
+		closed:  make(map[chan string]bool),
 	}
 }
 
@@ -127,8 +130,14 @@ func (b *Broadcaster) Unsubscribe(ch chan string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Check if already closed
+	if b.closed[ch] {
+		return
+	}
+
 	delete(b.clients, ch)
 	close(ch)
+	b.closed[ch] = true
 }
 
 // Broadcast sends a message to all subscribers
@@ -241,8 +250,10 @@ func (s *Service) Stop() error {
 		return fmt.Errorf("service %s is not running", s.Config.Name)
 	}
 
-	// Signal to stop auto-restart
-	close(s.stopChan)
+	// Signal to stop auto-restart (only close once)
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+	})
 
 	// Kill the process
 	if s.cmd != nil && s.cmd.Process != nil {
@@ -265,9 +276,10 @@ func (s *Service) Restart() error {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Reset stop channel
+	// Reset stop channel and once flag
 	s.mu.Lock()
 	s.stopChan = make(chan struct{})
+	s.stopOnce = sync.Once{}
 	s.mu.Unlock()
 
 	return s.Start()
@@ -311,15 +323,15 @@ func (s *Service) GetStatus() Status {
 
 // Status represents service status information
 type Status struct {
-	Name                string         `json:"name"`
-	Running             bool           `json:"running"`
-	PID                 int            `json:"pid"`
-	Uptime              time.Duration  `json:"uptime"`
-	Restarts            int            `json:"restarts"`
-	LastRunTime         *time.Time     `json:"lastRunTime,omitempty"`
-	LastExitCode        int            `json:"lastExitCode"`
-	LastDuration        time.Duration  `json:"lastDuration"`
-	ConsecutiveFailures int            `json:"consecutiveFailures"`
+	Name                string        `json:"name"`
+	Running             bool          `json:"running"`
+	PID                 int           `json:"pid"`
+	Uptime              time.Duration `json:"uptime"`
+	Restarts            int           `json:"restarts"`
+	LastRunTime         *time.Time    `json:"lastRunTime,omitempty"`
+	LastExitCode        int           `json:"lastExitCode"`
+	LastDuration        time.Duration `json:"lastDuration"`
+	ConsecutiveFailures int           `json:"consecutiveFailures"`
 }
 
 // GetStdoutBuffer returns the stdout buffer contents
@@ -479,17 +491,37 @@ func (s *Service) monitor() {
 	}
 
 	// Continuous services: check if we should restart
+	// Don't restart if service exited successfully (exit code 0)
+	if exitCode == 0 {
+		fmt.Fprintf(os.Stderr, "Service %s exited successfully (exit code 0). Not restarting.\n",
+			s.Config.Name)
+		return
+	}
+
+	// Check if intentionally stopped
 	select {
 	case <-s.stopChan:
 		// Stopped intentionally, don't restart
 		return
 	default:
-		// Crashed, keep trying to restart
+		// Service crashed/failed, keep trying to restart
 		for {
-			fmt.Fprintf(os.Stderr, "Service %s exited with error: %v. Restarting in %v...\n",
-				s.Config.Name, err, restartDelay)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Service %s exited with exit code %d: %v. Restarting in %v...\n",
+					s.Config.Name, exitCode, err, restartDelay)
+			} else {
+				fmt.Fprintf(os.Stderr, "Service %s exited with exit code %d. Restarting in %v...\n",
+					s.Config.Name, exitCode, restartDelay)
+			}
 
-			time.Sleep(restartDelay)
+			// Check if stop was requested during the delay
+			select {
+			case <-time.After(restartDelay):
+				// Continue with restart
+			case <-s.stopChan:
+				// Stop requested during delay, abort restart
+				return
+			}
 
 			s.mu.Lock()
 			s.restarts++

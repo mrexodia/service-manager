@@ -9,10 +9,10 @@ import (
 
 // GlobalConfig represents global service manager settings
 type GlobalConfig struct {
-	Host                string `yaml:"host,omitempty"`
-	Port                int    `yaml:"port,omitempty"`
-	FailureWebhookURL   string `yaml:"failure_webhook_url,omitempty"`
-	FailureThreshold    int    `yaml:"failure_threshold,omitempty"`    // Number of failures before webhook triggers
+	Host              string `yaml:"host,omitempty"`
+	Port              int    `yaml:"port,omitempty"`
+	FailureWebhookURL string `yaml:"failure_webhook_url,omitempty"`
+	MaxFailureRetries int    `yaml:"max_failure_retries,omitempty"` // Number of consecutive failures before webhook triggers
 }
 
 // ServiceConfig represents a single service configuration
@@ -48,13 +48,13 @@ func Load() (*Config, error) {
 
 	// Set defaults
 	if cfg.Global.Host == "" {
-		cfg.Global.Host = "0.0.0.0"
+		cfg.Global.Host = "127.0.0.1"
 	}
 	if cfg.Global.Port == 0 {
 		cfg.Global.Port = 4321
 	}
-	if cfg.Global.FailureThreshold == 0 {
-		cfg.Global.FailureThreshold = 3 // Default: trigger webhook after 3 consecutive failures
+	if cfg.Global.MaxFailureRetries == 0 {
+		cfg.Global.MaxFailureRetries = 3 // Default: trigger webhook after 3 consecutive failures
 	}
 
 	return &cfg, nil
@@ -291,20 +291,41 @@ func findServicesNode(root *yaml.Node) (*yaml.Node, error) {
 	return nil, fmt.Errorf("services key not found in YAML")
 }
 
-// writeYAML writes a YAML node back to the config file
+// writeYAML writes a YAML node back to the config file atomically
 func writeYAML(root *yaml.Node) error {
-	file, err := os.Create(configFile)
+	// Write to temporary file first
+	tmpFile := configFile + ".tmp"
+	file, err := os.Create(tmpFile)
 	if err != nil {
-		return fmt.Errorf("failed to create config file: %w", err)
+		return fmt.Errorf("failed to create temp config file: %w", err)
 	}
-	defer file.Close()
+
+	// Ensure temp file is removed if something goes wrong
+	defer func() {
+		if file != nil {
+			file.Close()
+		}
+		// Remove temp file if it still exists (in case of error)
+		if _, err := os.Stat(tmpFile); err == nil {
+			os.Remove(tmpFile)
+		}
+	}()
 
 	encoder := yaml.NewEncoder(file)
 	encoder.SetIndent(2)
-	defer encoder.Close()
 
 	if err := encoder.Encode(root); err != nil {
+		encoder.Close()
 		return fmt.Errorf("failed to encode YAML: %w", err)
+	}
+
+	encoder.Close()
+	file.Close()
+	file = nil // Mark as closed so defer doesn't close again
+
+	// Atomically replace the original file
+	if err := os.Rename(tmpFile, configFile); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
 	return nil

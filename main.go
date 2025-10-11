@@ -42,19 +42,28 @@ func main() {
 	// Start web server with configured host/port
 	globalCfg := mgr.GetGlobalConfig()
 	server := web.New(mgr, globalCfg.Host, globalCfg.Port)
+
+	// Channel to signal web server errors
+	serverErrChan := make(chan error, 1)
 	go func() {
 		if err := server.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
-			os.Exit(1)
+			serverErrChan <- err
 		}
 	}()
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal or server error
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
 
-	fmt.Println("\nShutting down...")
+	select {
+	case <-sigChan:
+		fmt.Println("\nShutting down...")
+	case err := <-serverErrChan:
+		fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
+		fmt.Println("Shutting down due to web server error...")
+	}
+
+	// Perform graceful shutdown
 	mgr.StopAll()
 	fmt.Println("Service Manager stopped")
 }
@@ -64,10 +73,10 @@ func createEmptyConfig() error {
 # Define your services below
 
 config:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 4321
   failure_webhook_url: ""
-  failure_threshold: 3
+  max_failure_retries: 3
 
 services: []
 `

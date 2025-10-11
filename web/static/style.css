@@ -80,6 +80,10 @@ body {
     background-color: #e74c3c;
 }
 
+.status-dot.disabled {
+    background-color: #95a5a6;
+}
+
 .service-item-name {
     flex: 1;
 }
@@ -153,6 +157,57 @@ body {
 .service-actions {
     display: flex;
     gap: 10px;
+    align-items: center;
+}
+
+.action-separator {
+    color: #ccc;
+    padding: 0 5px;
+    user-select: none;
+}
+
+.toggle-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.toggle-switch input[type="checkbox"] {
+    position: relative;
+    width: 50px;
+    height: 24px;
+    -webkit-appearance: none;
+    background-color: #e74c3c;
+    outline: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.toggle-switch input[type="checkbox"]:checked {
+    background-color: #2ecc71;
+}
+
+.toggle-switch input[type="checkbox"]:before {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    top: 2px;
+    left: 2px;
+    background-color: white;
+    transition: left 0.3s;
+}
+
+.toggle-switch input[type="checkbox"]:checked:before {
+    left: 28px;
+}
+
+.toggle-label {
+    font-size: 14px;
 }
 
 .service-stats {
@@ -426,11 +481,7 @@ body {
     font-weight: 500;
 }
 
-/* Run Now Button */
-.btn-run-now {
-    background-color: #f39c12;
-    color: white;
-}
+/* Run Now Button - uses btn-success (green) */
 
 /* Last Run Stats */
 .last-run-stats {

@@ -91,7 +91,12 @@ function renderServiceList(services) {
             item.appendChild(clock);
         } else {
             const dot = document.createElement('div');
-            dot.className = `status-dot ${service.running ? 'running' : 'stopped'}`;
+            // Show grey dot for disabled services, otherwise green/red based on running state
+            if (service.enabled === false) {
+                dot.className = 'status-dot disabled';
+            } else {
+                dot.className = `status-dot ${service.running ? 'running' : 'stopped'}`;
+            }
             item.appendChild(dot);
         }
 
@@ -139,36 +144,38 @@ function showServiceView(service) {
     document.getElementById('serviceName').textContent = service.name;
     updateServiceStatus(service);
 
-    // Update buttons based on service type
+    // Update buttons and checkbox based on service state
+    const enabledCheckbox = document.getElementById('enabledCheckbox');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const restartBtn = document.getElementById('restartBtn');
     const runNowBtn = document.getElementById('runNowBtn');
-    const toggleContainer = document.getElementById('toggleContainer');
+
+    // Set checkbox state
+    enabledCheckbox.checked = service.enabled !== false;
 
     if (isScheduledService(service)) {
-        // Scheduled service: show Run Now button and toggle
+        // Scheduled service: hide start/stop/restart, show Run Now
         startBtn.style.display = 'none';
         stopBtn.style.display = 'none';
         restartBtn.style.display = 'none';
         runNowBtn.style.display = 'inline-block';
-        toggleContainer.style.display = 'inline-flex';
 
-        // Update toggle state
-        const toggleSwitch = document.getElementById('enableToggle');
-        toggleSwitch.checked = service.enabled !== false;
-
-        // Disable Run Now if already running
-        runNowBtn.disabled = service.running;
+        // Disable Run Now if already running or service is disabled
+        runNowBtn.disabled = service.running || service.enabled === false;
     } else {
         // Continuous service: show Start/Stop/Restart buttons
         startBtn.style.display = 'inline-block';
         stopBtn.style.display = 'inline-block';
         restartBtn.style.display = 'inline-block';
         runNowBtn.style.display = 'none';
-        toggleContainer.style.display = 'none';
 
-        if (service.running) {
+        // Disable all controls if service is disabled
+        if (service.enabled === false) {
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            restartBtn.disabled = true;
+        } else if (service.running) {
             startBtn.disabled = true;
             stopBtn.disabled = false;
             restartBtn.disabled = false;
@@ -627,29 +634,34 @@ async function handleRunNow() {
     }
 }
 
-// Handle toggle enabled/disabled
-async function handleToggleEnabled() {
+// Handle enabled checkbox change
+async function handleEnabledChange() {
     if (!selectedService) return;
 
+    const checkbox = document.getElementById('enabledCheckbox');
+    const isEnabled = checkbox.checked;
+    const action = isEnabled ? 'enable' : 'disable';
+
     try {
-        const response = await fetch(`/api/services/${selectedService}`);
-        const service = await response.json();
-
-        const currentlyEnabled = service.enabled !== false;
-        const action = currentlyEnabled ? 'stop' : 'start';
-
-        const controlResponse = await fetch(`/api/services/${selectedService}/${action}`, {
+        const response = await fetch(`/api/services/${selectedService}/${action}`, {
             method: 'POST'
         });
 
-        if (controlResponse.ok) {
-            // Refresh immediately
-            setTimeout(() => selectService(selectedService), 200);
+        if (response.ok) {
+            // Refresh service list and re-select current service to update button states
+            setTimeout(() => {
+                loadServices();
+                selectService(selectedService);
+            }, 200);
         } else {
             alert(`Failed to ${action} service`);
+            // Revert checkbox state on error
+            checkbox.checked = !isEnabled;
         }
     } catch (error) {
         console.error('Failed to toggle service:', error);
         alert('Failed to toggle service');
+        // Revert checkbox state on error
+        checkbox.checked = !isEnabled;
     }
 }

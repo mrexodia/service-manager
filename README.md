@@ -27,6 +27,19 @@ Build the service manager:
 go build -o service-manager.exe
 ```
 
+**Note**: The Windows executable icon is embedded from `web/static/favicon.ico`. If you change the icon, regenerate the resource file:
+
+```bash
+# Install rsrc tool (one-time setup)
+go install github.com/akavel/rsrc@latest
+
+# Generate resource file
+rsrc -ico web/static/favicon.ico -o rsrc.syso
+
+# Build
+go build -o service-manager.exe
+```
+
 ## Configuration
 
 Services are defined in `services.yaml`. Example:
