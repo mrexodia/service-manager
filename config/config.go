@@ -13,6 +13,7 @@ type GlobalConfig struct {
 	Port              int    `yaml:"port,omitempty"`
 	FailureWebhookURL string `yaml:"failure_webhook_url,omitempty"`
 	FailureRetries    int    `yaml:"failure_retries,omitempty"` // Number of consecutive failures before webhook triggers
+	Authorization     string `yaml:"authorization,omitempty"`   // BasicAuth credentials in format "username:password"
 }
 
 // ServiceConfig represents a single service configuration

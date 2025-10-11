@@ -40,8 +40,7 @@ func main() {
 	fmt.Println("Watching services.yaml for changes...")
 
 	// Start web server with configured host/port
-	globalCfg := mgr.GetGlobalConfig()
-	server := web.New(mgr, globalCfg.Host, globalCfg.Port)
+	server := web.New(mgr)
 
 	// Channel to signal web server errors
 	serverErrChan := make(chan error, 1)
@@ -77,6 +76,7 @@ config:
   port: 4321
   failure_webhook_url: ""
   failure_retries: 3
+  authorization: "Password@123"
 
 services: []
 `

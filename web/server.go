@@ -17,120 +17,84 @@ type Server struct {
 	host     string
 	port     int
 	upgrader websocket.Upgrader
+	username string // BasicAuth username (empty = no username required)
+	password string // BasicAuth password (empty = no auth)
 }
 
 // New creates a new web server
-func New(mgr *manager.Manager, host string, port int) *Server {
-	s := &Server{
-		manager: mgr,
-		host:    host,
-		port:    port,
+func New(mgr *manager.Manager) *Server {
+	// Parse authorization config once
+	var username, password string
+	cfg := mgr.GetGlobalConfig()
+	if cfg.Authorization != "" {
+		if idx := strings.Index(cfg.Authorization, ":"); idx > 0 {
+			username = cfg.Authorization[:idx]
+			password = cfg.Authorization[idx+1:]
+		} else {
+			password = cfg.Authorization
+		}
 	}
 
-	// Configure WebSocket upgrader with proper CORS checking
-	s.upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			// In production, you should check against allowed origins
-			// For now, allow same-origin and localhost for development
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				return true // Allow no-origin (same-origin) requests
-			}
-
-			// Allow localhost and same host connections with configured port
-			host := r.Host
-			portStr := fmt.Sprintf("%d", port)
-			return origin == "http://"+host ||
-				origin == "https://"+host ||
-				origin == "http://localhost" ||
-				origin == "http://localhost:"+portStr ||
-				origin == "http://127.0.0.1:"+portStr
-		},
+	return &Server{
+		manager:  mgr,
+		host:     cfg.Host,
+		port:     cfg.Port,
+		upgrader: websocket.Upgrader{},
+		username: username,
+		password: password,
 	}
+}
 
-	return s
+// basicAuthMiddleware wraps the entire handler with BasicAuth authentication
+func (s *Server) basicAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// If no password configured, allow all requests
+		if s.password == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Get credentials from request
+		username, password, ok := r.BasicAuth()
+		if !ok || username != s.username || password != s.password {
+			// Send WWW-Authenticate header to prompt browser for credentials
+			w.Header().Set("WWW-Authenticate", `Basic realm="Service Manager"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Authentication successful, proceed with handler
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the web server
 func (s *Server) Start() error {
-	http.HandleFunc("/api/services", s.handleServices)
-	http.HandleFunc("/api/services/", s.handleServiceActions)
-	http.HandleFunc("/", s.handleStatic)
+	mux := http.NewServeMux()
+
+	// API routes with pattern matching
+	mux.HandleFunc("GET /api/services", s.listServices)
+	mux.HandleFunc("POST /api/services", s.createService)
+	mux.HandleFunc("GET /api/services/{name}", s.getService)
+	mux.HandleFunc("PUT /api/services/{name}", s.updateService)
+	mux.HandleFunc("DELETE /api/services/{name}", s.deleteService)
+	mux.HandleFunc("POST /api/services/{name}/start", s.startService)
+	mux.HandleFunc("POST /api/services/{name}/stop", s.stopService)
+	mux.HandleFunc("POST /api/services/{name}/restart", s.restartService)
+	mux.HandleFunc("POST /api/services/{name}/enable", s.enableService)
+	mux.HandleFunc("POST /api/services/{name}/disable", s.disableService)
+	mux.HandleFunc("POST /api/services/{name}/run-now", s.runNowService)
+	mux.HandleFunc("GET /api/services/{name}/logs/{stream}", s.streamLogs)
+
+	// Static files (catch-all)
+	mux.HandleFunc("GET /{path...}", s.handleStatic)
+
+	// Wrap entire mux with auth middleware
+	handler := s.basicAuthMiddleware(mux)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	fmt.Printf("Starting web server on http://%s\n", addr)
-	return http.ListenAndServe(addr, nil)
-}
-
-// handleServices handles GET /api/services (list all) and POST /api/services (create)
-func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listServices(w, r)
-	case http.MethodPost:
-		s.createService(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleServiceActions handles service-specific actions
-func (s *Server) handleServiceActions(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/services/")
-	parts := strings.Split(path, "/")
-
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "Service name required", http.StatusBadRequest)
-		return
-	}
-
-	serviceName := parts[0]
-
-	// Handle different endpoints
-	if len(parts) == 1 {
-		// /api/services/{name}
-		switch r.Method {
-		case http.MethodGet:
-			s.getService(w, r, serviceName)
-		case http.MethodPut:
-			s.updateService(w, r, serviceName)
-		case http.MethodDelete:
-			s.deleteService(w, r, serviceName)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-		return
-	}
-
-	if len(parts) == 2 {
-		action := parts[1]
-		switch action {
-		case "start":
-			s.startService(w, r, serviceName)
-		case "stop":
-			s.stopService(w, r, serviceName)
-		case "restart":
-			s.restartService(w, r, serviceName)
-		case "enable":
-			s.enableService(w, r, serviceName)
-		case "disable":
-			s.disableService(w, r, serviceName)
-		case "run-now":
-			s.runNowService(w, r, serviceName)
-		default:
-			http.Error(w, "Unknown action", http.StatusNotFound)
-		}
-		return
-	}
-
-	if len(parts) == 3 && parts[1] == "logs" {
-		// /api/services/{name}/logs/{stream}
-		stream := parts[2]
-		s.streamLogs(w, r, serviceName, stream)
-		return
-	}
-
-	http.Error(w, "Not found", http.StatusNotFound)
+	return http.ListenAndServe(addr, handler)
 }
 
 // listServices returns all services with their status
@@ -168,7 +132,8 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 }
 
 // getService returns a specific service with config and status
-func (s *Server) getService(w http.ResponseWriter, r *http.Request, name string) {
+func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	svc, err := s.manager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -231,7 +196,8 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateService updates an existing service
-func (s *Server) updateService(w http.ResponseWriter, r *http.Request, name string) {
+func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	var cfg config.ServiceConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -260,7 +226,8 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request, name stri
 }
 
 // deleteService deletes a service
-func (s *Server) deleteService(w http.ResponseWriter, r *http.Request, name string) {
+func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.DeleteService(name); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -275,12 +242,8 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request, name stri
 }
 
 // startService starts a service
-func (s *Server) startService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) startService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.StartService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -291,12 +254,8 @@ func (s *Server) startService(w http.ResponseWriter, r *http.Request, name strin
 }
 
 // stopService stops a service
-func (s *Server) stopService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) stopService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.StopService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -307,12 +266,8 @@ func (s *Server) stopService(w http.ResponseWriter, r *http.Request, name string
 }
 
 // restartService restarts a service
-func (s *Server) restartService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.RestartService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -323,12 +278,8 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request, name str
 }
 
 // enableService enables a service
-func (s *Server) enableService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) enableService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.EnableService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -339,12 +290,8 @@ func (s *Server) enableService(w http.ResponseWriter, r *http.Request, name stri
 }
 
 // disableService disables a service
-func (s *Server) disableService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) disableService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	if err := s.manager.DisableService(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -355,12 +302,8 @@ func (s *Server) disableService(w http.ResponseWriter, r *http.Request, name str
 }
 
 // runNowService runs a scheduled service immediately
-func (s *Server) runNowService(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (s *Server) runNowService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
 	svc, err := s.manager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -390,13 +333,16 @@ func (s *Server) runNowService(w http.ResponseWriter, r *http.Request, name stri
 }
 
 // streamLogs streams logs via WebSocket
-func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, serviceName, stream string) {
+func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	stream := r.PathValue("stream")
+
 	if stream != "stdout" && stream != "stderr" {
 		http.Error(w, "Stream must be stdout or stderr", http.StatusBadRequest)
 		return
 	}
 
-	svc, err := s.manager.GetService(serviceName)
+	svc, err := s.manager.GetService(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -411,10 +357,14 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, serviceName,
 
 	// Send historical logs
 	var historyBytes []byte
-	if stream == "stdout" {
+	switch stream {
+	case "stdout":
 		historyBytes = svc.GetStdoutBuffer()
-	} else {
+	case "stderr":
 		historyBytes = svc.GetStderrBuffer()
+	default:
+		http.Error(w, "Stream must be stdout or stderr", http.StatusNotFound)
+		return
 	}
 
 	if len(historyBytes) > 0 {
@@ -443,10 +393,11 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, serviceName,
 
 // handleStatic serves static files
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
+	path := r.PathValue("path")
+	if path == "" {
 		http.ServeFile(w, r, "web/static/index.html")
 		return
 	}
 
-	http.ServeFile(w, r, "web/static"+r.URL.Path)
+	http.ServeFile(w, r, "web/static/"+path)
 }
