@@ -372,10 +372,6 @@ async function handleCreateService(e) {
 
     const name = document.getElementById('createName').value;
     const command = document.getElementById('createCommand').value;
-    const args = document.getElementById('createArgs').value
-        .split('\n')
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
     const workdir = document.getElementById('createWorkdir').value;
     const envText = document.getElementById('createEnv').value;
 
@@ -393,7 +389,6 @@ async function handleCreateService(e) {
     const service = {
         name,
         command,
-        args: args.length > 0 ? args : undefined,
         workdir: workdir || undefined,
         env: Object.keys(env).length > 0 ? env : undefined
     };
@@ -431,7 +426,6 @@ async function showEditForm() {
 
         document.getElementById('editName').value = service.name;
         document.getElementById('editCommand').value = service.command;
-        document.getElementById('editArgs').value = (service.args || []).join('\n');
         document.getElementById('editWorkdir').value = service.workdir || '';
 
         const envLines = [];
@@ -463,10 +457,6 @@ async function handleUpdateService(e) {
 
     const name = document.getElementById('editName').value;
     const command = document.getElementById('editCommand').value;
-    const args = document.getElementById('editArgs').value
-        .split('\n')
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
     const workdir = document.getElementById('editWorkdir').value;
     const envText = document.getElementById('editEnv').value;
 
@@ -489,7 +479,6 @@ async function handleUpdateService(e) {
     const service = {
         name,
         command,
-        args: args.length > 0 ? args : undefined,
         workdir: workdir || undefined,
         env: Object.keys(env).length > 0 ? env : undefined,
         enabled: enabledValue,

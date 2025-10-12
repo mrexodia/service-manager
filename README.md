@@ -25,7 +25,7 @@ Or build from source:
 ```bash
 git clone https://github.com/mrexodia/service-manager.git
 cd service-manager
-go build
+go build -ldflags -H=windowsgui
 ```
 
 ## Configuration
@@ -42,30 +42,33 @@ authorization: "password" # BasicAuth credentials: "username:password" or just "
 services:
   # Example: A simple ping service
   - name: ping-example
-    command: ping
-    args: ['localhost', '-t']
+    command: ping localhost -t
     workdir: ""
     env: {}
     enabled: false
+    schedule: ""
   # Example: A slower timestamp service (prints every 5 seconds)
   - name: timestamp-example
-    command: powershell
-    args: ['-Command', 'while($true) { Get-Date; Start-Sleep -Seconds 5 }']
+    command: powershell -Command "while($true) { Get-Date; Start-Sleep -Seconds 5 }"
     workdir: ""
     env:
-      EXAMPLE_VAR: "hello"
+      EXAMPLE_VAR: hello
     enabled: true
+    schedule: ""
   # Example: Scheduled service that runs every 5 minutes
   - name: hourly-cleanup
-    command: cmd
-    args: ['/c', 'echo Cleaning up at %DATE% %TIME%']
-    schedule: "*/5 * * * *" # Every 5 minutes
+    command: cmd /c "echo Cleaning up at %DATE% %TIME%"
+    schedule: '*/5 * * * *'
     enabled: true
+    workdir: ""
+    env: {}
   # Example: One-off service that runs once on startup
   - name: one-off
-    command: uv
-    args: ['--help']
+    command: uv --help
     enabled: true
+    workdir: ""
+    env: {}
+    schedule: ""
 ```
 
 ### Configuration Fields
@@ -80,7 +83,7 @@ services:
 
 ### Cron Schedule Syntax
 
-Scheduled services use standard cron syntax with 5 fields (minute, hour, day, month, weekday). See [cron.help](https://cron.help/) for interactive examples and syntax help.
+Scheduled services use standard cron syntax with 5 fields (minute, hour, day, month, weekday). See [CRONUS](https://cron-us.vercel.app/) for interactive examples and syntax help.
 
 Examples:
 - `*/5 * * * *` - Every 5 minutes

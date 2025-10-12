@@ -147,10 +147,9 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := svc.GetStatus()
-	response := map[string]interface{}{
+	response := map[string]any{
 		"name":         svc.Config.Name,
 		"command":      svc.Config.Command,
-		"args":         svc.Config.Args,
 		"workdir":      svc.Config.Workdir,
 		"env":          svc.Config.Env,
 		"running":      status.Running,

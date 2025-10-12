@@ -27,8 +27,7 @@ type GlobalConfig struct {
 // ServiceConfig represents a single service configuration
 type ServiceConfig struct {
 	Name     string            `yaml:"name"`
-	Command  string            `yaml:"command"`
-	Args     []string          `yaml:"args,omitempty,flow"`
+	Command  string            `yaml:"command"` // Full command with arguments (e.g. "python -u server.py")
 	Workdir  string            `yaml:"workdir,omitempty"`
 	Env      map[string]string `yaml:"env,omitempty"`
 	Enabled  *bool             `yaml:"enabled,omitempty"`  // nil means true for backwards compatibility
@@ -615,7 +614,6 @@ func (cm *ConfigManager) updateServiceNode(node *yaml.Node, svc ServiceConfig) e
 	updates := map[string]interface{}{
 		"name":     svc.Name,
 		"command":  svc.Command,
-		"args":     svc.Args,
 		"workdir":  svc.Workdir,
 		"env":      svc.Env,
 		"enabled":  svc.Enabled,
@@ -631,7 +629,7 @@ func (cm *ConfigManager) updateServiceNode(node *yaml.Node, svc ServiceConfig) e
 }
 
 // setOrUpdateField sets or updates a field in a mapping node
-func (cm *ConfigManager) setOrUpdateField(node *yaml.Node, key string, value interface{}) {
+func (cm *ConfigManager) setOrUpdateField(node *yaml.Node, key string, value any) {
 	// Find existing key
 	for i := 0; i < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
@@ -654,7 +652,7 @@ func (cm *ConfigManager) setOrUpdateField(node *yaml.Node, key string, value int
 }
 
 // encodeValue encodes a value into a yaml.Node
-func (cm *ConfigManager) encodeValue(node *yaml.Node, value interface{}) {
+func (cm *ConfigManager) encodeValue(node *yaml.Node, value any) {
 	// Handle nil pointers (for enabled field)
 	if value == nil {
 		node.Kind = yaml.ScalarNode
@@ -686,31 +684,6 @@ func (cm *ConfigManager) encodeValue(node *yaml.Node, value interface{}) {
 		node.Kind = yaml.ScalarNode
 		node.Tag = "!!str"
 		node.Value = ""
-		return
-	}
-
-	// Handle empty slices (omitempty behavior)
-	if args, ok := value.([]string); ok && len(args) == 0 {
-		node.Kind = yaml.SequenceNode
-		node.Tag = "!!seq"
-		node.Content = nil
-		node.Style = yaml.FlowStyle
-		return
-	}
-
-	// Handle non-empty slices
-	if args, ok := value.([]string); ok {
-		node.Kind = yaml.SequenceNode
-		node.Tag = "!!seq"
-		node.Style = yaml.FlowStyle
-		node.Content = make([]*yaml.Node, 0, len(args))
-		for _, arg := range args {
-			node.Content = append(node.Content, &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Tag:   "!!str",
-				Value: arg,
-			})
-		}
 		return
 	}
 
@@ -887,15 +860,6 @@ func serviceConfigsEqual(a, b ServiceConfig) bool {
 		a.Workdir != b.Workdir || a.Schedule != b.Schedule ||
 		a.IsEnabled() != b.IsEnabled() {
 		return false
-	}
-
-	if len(a.Args) != len(b.Args) {
-		return false
-	}
-	for i := range a.Args {
-		if a.Args[i] != b.Args[i] {
-			return false
-		}
 	}
 
 	if len(a.Env) != len(b.Env) {

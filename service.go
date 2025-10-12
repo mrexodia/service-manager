@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/google/shlex"
 )
 
 const (
@@ -190,8 +192,19 @@ func (s *Service) Start() error {
 		return err
 	}
 
-	// Create command
-	s.cmd = exec.Command(s.Config.Command, s.Config.Args...)
+	// Parse command string into command and arguments
+	parts, err := shlex.Split(s.Config.Command)
+	if err != nil {
+		return fmt.Errorf("failed to parse command: %w", err)
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+
+	// Create command (first part is the command, rest are arguments)
+	cmdName := parts[0]
+	cmdArgs := parts[1:]
+	s.cmd = exec.Command(cmdName, cmdArgs...)
 
 	// Configure Windows-specific process attributes (hide console windows)
 	configureCmdWindows(s.cmd)

@@ -7,16 +7,14 @@ authorization: "password" # BasicAuth credentials: "username:password" or just "
 services:
   # Example: A simple ping service
   - name: ping-example
-    command: ping
-    args: [localhost, -t]
+    command: ping localhost -t
     workdir: ""
     env: {}
     enabled: false
     schedule: ""
   # Example: A slower timestamp service (prints every 5 seconds)
   - name: timestamp-example
-    command: powershell
-    args: [-Command, 'while($true) { Get-Date; Start-Sleep -Seconds 5 }']
+    command: powershell -Command "while($true) { Get-Date; Start-Sleep -Seconds 5 }"
     workdir: ""
     env:
       EXAMPLE_VAR: hello
@@ -24,16 +22,14 @@ services:
     schedule: ""
   # Example: Scheduled service that runs every 5 minutes
   - name: hourly-cleanup
-    command: cmd
-    args: [/c, echo Cleaning up at %DATE% %TIME%]
+    command: cmd /c "echo Cleaning up at %DATE% %TIME%"
     schedule: '*/5 * * * *'
     enabled: true
     workdir: ""
     env: {}
   # Example: One-off service that runs once on startup
   - name: one-off
-    command: uv
-    args: [--help]
+    command: uv --help
     enabled: true
     workdir: ""
     env: {}

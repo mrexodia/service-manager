@@ -221,8 +221,7 @@ func TestConfigManager_AddService(t *testing.T) {
 
 	newService := ServiceConfig{
 		Name:    "test-service",
-		Command: "echo",
-		Args:    []string{"hello"},
+		Command: "echo hello",
 	}
 
 	err := cm.AddService(newService)
@@ -280,8 +279,7 @@ func TestConfigManager_AddService_Duplicate(t *testing.T) {
 func TestConfigManager_UpdateService(t *testing.T) {
 	content := `services:
   - name: test-service
-    command: echo
-    args: ["old"]
+    command: "echo old"
 `
 	yamlPath := createTempYAML(t, content)
 	cm := NewConfigManager(yamlPath)
@@ -292,8 +290,7 @@ func TestConfigManager_UpdateService(t *testing.T) {
 
 	updatedService := ServiceConfig{
 		Name:    "test-service",
-		Command: "echo",
-		Args:    []string{"new"},
+		Command: "echo new",
 	}
 
 	err := cm.UpdateService("test-service", updatedService)
@@ -311,8 +308,8 @@ func TestConfigManager_UpdateService(t *testing.T) {
 	if !found {
 		t.Fatal("Service not found after update")
 	}
-	if len(svc.Args) != 1 || svc.Args[0] != "new" {
-		t.Errorf("Expected args [new], got %v", svc.Args)
+	if svc.Command != "echo new" {
+		t.Errorf("Expected command 'echo new', got %s", svc.Command)
 	}
 }
 
@@ -716,10 +713,10 @@ func TestCalculateServicesToKill_DeletedService(t *testing.T) {
 
 func TestCalculateServicesToKill_ModifiedService(t *testing.T) {
 	oldServices := []ServiceConfig{
-		{Name: "test-service", Command: "echo", Args: []string{"old"}},
+		{Name: "test-service", Command: "echo old"},
 	}
 	newServices := []ServiceConfig{
-		{Name: "test-service", Command: "echo", Args: []string{"new"}},
+		{Name: "test-service", Command: "echo new"},
 	}
 
 	toKill := calculateServicesToKill(oldServices, newServices)
@@ -734,10 +731,10 @@ func TestCalculateServicesToKill_ModifiedService(t *testing.T) {
 
 func TestCalculateServicesToKill_UnchangedService(t *testing.T) {
 	oldServices := []ServiceConfig{
-		{Name: "test-service", Command: "echo", Args: []string{"hello"}},
+		{Name: "test-service", Command: "echo hello"},
 	}
 	newServices := []ServiceConfig{
-		{Name: "test-service", Command: "echo", Args: []string{"hello"}},
+		{Name: "test-service", Command: "echo hello"},
 	}
 
 	toKill := calculateServicesToKill(oldServices, newServices)
@@ -766,16 +763,14 @@ func TestCalculateServicesToKill_NewService(t *testing.T) {
 func TestServiceConfigsEqual_Identical(t *testing.T) {
 	a := ServiceConfig{
 		Name:     "test",
-		Command:  "echo",
-		Args:     []string{"hello", "world"},
+		Command:  "echo hello world",
 		Workdir:  "/tmp",
 		Schedule: "*/5 * * * *",
 		Env:      map[string]string{"KEY": "value"},
 	}
 	b := ServiceConfig{
 		Name:     "test",
-		Command:  "echo",
-		Args:     []string{"hello", "world"},
+		Command:  "echo hello world",
 		Workdir:  "/tmp",
 		Schedule: "*/5 * * * *",
 		Env:      map[string]string{"KEY": "value"},
@@ -805,8 +800,8 @@ func TestServiceConfigsEqual_DifferentCommand(t *testing.T) {
 }
 
 func TestServiceConfigsEqual_DifferentArgs(t *testing.T) {
-	a := ServiceConfig{Name: "test", Command: "echo", Args: []string{"a"}}
-	b := ServiceConfig{Name: "test", Command: "echo", Args: []string{"b"}}
+	a := ServiceConfig{Name: "test", Command: "echo a"}
+	b := ServiceConfig{Name: "test", Command: "echo b"}
 
 	if serviceConfigsEqual(a, b) {
 		t.Error("Expected configs with different args to be unequal")
@@ -814,8 +809,8 @@ func TestServiceConfigsEqual_DifferentArgs(t *testing.T) {
 }
 
 func TestServiceConfigsEqual_DifferentArgLength(t *testing.T) {
-	a := ServiceConfig{Name: "test", Command: "echo", Args: []string{"a"}}
-	b := ServiceConfig{Name: "test", Command: "echo", Args: []string{"a", "b"}}
+	a := ServiceConfig{Name: "test", Command: "echo a"}
+	b := ServiceConfig{Name: "test", Command: "echo a b"}
 
 	if serviceConfigsEqual(a, b) {
 		t.Error("Expected configs with different arg lengths to be unequal")
@@ -1131,8 +1126,7 @@ func TestConfigManager_Regression_ModifyDisabledService(t *testing.T) {
 	// The ServiceManager is responsible for checking if it's enabled before taking action
 	content := `services:
   - name: test-service
-    command: echo
-    args: ["original"]
+    command: "echo original"
     enabled: false
 `
 	yamlPath := createTempYAML(t, content)
@@ -1152,11 +1146,10 @@ func TestConfigManager_Regression_ModifyDisabledService(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	initialUpdateCount := len(listener.updates)
 
-	// Modify the disabled service (change args)
+	// Modify the disabled service (change command)
 	updatedService := ServiceConfig{
 		Name:    "test-service",
-		Command: "echo",
-		Args:    []string{"modified"},
+		Command: "echo modified",
 		Enabled: boolPtr(false),
 	}
 
@@ -1182,13 +1175,13 @@ func TestConfigManager_Regression_ModifyDisabledService(t *testing.T) {
 		t.Errorf("Expected test-service in toKill, got %v", lastUpdate.toKill)
 	}
 
-	// Verify service is still disabled but has new args
+	// Verify service is still disabled but has new command
 	svc := lastUpdate.services[0]
 	if svc.IsEnabled() {
 		t.Error("Service should still be disabled after modification")
 	}
-	if len(svc.Args) != 1 || svc.Args[0] != "modified" {
-		t.Errorf("Service args should be updated to [modified], got %v", svc.Args)
+	if svc.Command != "echo modified" {
+		t.Errorf("Service command should be updated to 'echo modified', got %s", svc.Command)
 	}
 }
 
@@ -1197,8 +1190,7 @@ func TestConfigManager_Regression_ModifyThenDisable(t *testing.T) {
 	// ConfigManager reports it in toKill. ServiceManager will kill it (to stop it) but not restart
 	content := `services:
   - name: test-service
-    command: echo
-    args: ["original"]
+    command: "echo original"
 `
 	yamlPath := createTempYAML(t, content)
 	cm := NewConfigManager(yamlPath)
@@ -1220,8 +1212,7 @@ func TestConfigManager_Regression_ModifyThenDisable(t *testing.T) {
 	// Modify the service AND disable it
 	updatedService := ServiceConfig{
 		Name:    "test-service",
-		Command: "echo",
-		Args:    []string{"modified"},
+		Command: "echo modified",
 		Enabled: boolPtr(false),
 	}
 

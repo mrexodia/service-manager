@@ -7,3 +7,5 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
