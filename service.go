@@ -193,6 +193,9 @@ func (s *Service) Start() error {
 	// Create command
 	s.cmd = exec.Command(s.Config.Command, s.Config.Args...)
 
+	// Configure Windows-specific process attributes (hide console windows)
+	configureCmdWindows(s.cmd)
+
 	// Set working directory
 	if s.Config.Workdir != "" {
 		s.cmd.Dir = s.Config.Workdir
@@ -247,17 +250,19 @@ func (s *Service) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Signal to stop auto-restart first (only close once)
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+	})
+
+	// If there's no running process, we're done
 	if !s.running {
-		return fmt.Errorf("service %s is not running", s.Config.Name)
+		// Even if not running, we signaled to stop auto-restart above
+		return nil
 	}
 
 	// Log before stopping
 	s.logServiceEvent(fmt.Sprintf("Stopping service '%s' (PID: %d)", s.Config.Name, s.pid))
-
-	// Signal to stop auto-restart (only close once)
-	s.stopOnce.Do(func() {
-		close(s.stopChan)
-	})
 
 	// Kill the process
 	if s.cmd != nil && s.cmd.Process != nil {
@@ -585,6 +590,16 @@ func (s *Service) monitor() {
 	default:
 		// Service crashed/failed, keep trying to restart
 		for {
+			// Check if service is disabled before attempting restart
+			s.mu.RLock()
+			isEnabled := s.Config.IsEnabled()
+			s.mu.RUnlock()
+
+			if !isEnabled {
+				fmt.Fprintf(os.Stderr, "Service %s is disabled. Not restarting.\n", s.Config.Name)
+				return
+			}
+
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Service %s exited with exit code %d: %v. Restarting in %v...\n",
 					s.Config.Name, exitCode, err, restartDelay)
