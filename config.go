@@ -551,6 +551,8 @@ func (cm *ConfigManager) saveToDisk(servicesToSave []ServiceConfig) error {
 			if err := serviceNode.Encode(svc); err != nil {
 				return fmt.Errorf("failed to encode service: %w", err)
 			}
+			// Set block style to match existing services
+			setBlockStyle(&serviceNode)
 			newContent = append(newContent, &serviceNode)
 		}
 	}
@@ -738,6 +740,35 @@ func (cm *ConfigManager) encodeValue(node *yaml.Node, value interface{}) {
 	var temp yaml.Node
 	temp.Encode(value)
 	*node = temp
+}
+
+// setBlockStyle recursively sets YAML nodes to use block style formatting
+func setBlockStyle(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+
+	switch node.Kind {
+	case yaml.MappingNode:
+		// Use block style for mappings (multi-line)
+		node.Style = 0 // Default style for mappings is block
+		// Recursively set style for all child nodes
+		for _, child := range node.Content {
+			setBlockStyle(child)
+		}
+	case yaml.SequenceNode:
+		// Keep flow style for sequences (inline like [a, b, c])
+		// This is already set by encodeValue, but ensure it stays
+		if node.Style == 0 {
+			node.Style = yaml.FlowStyle
+		}
+		for _, child := range node.Content {
+			setBlockStyle(child)
+		}
+	case yaml.ScalarNode:
+		// Use default style for scalars
+		node.Style = 0
+	}
 }
 
 // findServicesNode locates the services array node in the YAML tree
