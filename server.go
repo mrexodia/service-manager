@@ -1,13 +1,19 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"strings"
 
 	"github.com/gorilla/websocket"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 // Server represents the web server
 type Server struct {
@@ -391,13 +397,35 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleStatic serves static files
+// handleStatic serves static files from embedded filesystem
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	path := r.PathValue("path")
 	if path == "" {
-		http.ServeFile(w, r, "static/index.html")
+		path = "index.html"
+	}
+
+	// Get the embedded filesystem rooted at "static"
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	http.ServeFile(w, r, "static/"+path)
+	// Open and serve the file directly
+	file, err := staticFS.Open(path)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	// Get file info for content type detection
+	stat, err := file.Stat()
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Serve the file
+	http.ServeContent(w, r, path, stat.ModTime(), file.(io.ReadSeeker))
 }
