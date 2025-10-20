@@ -1,36 +1,25 @@
 # Global configuration
-host: "127.0.0.1" # Listen address (default: 127.0.0.1)
+host: 127.0.0.1 # Listen address (default: 127.0.0.1)
 port: 4321 # Web UI port (default: 4321)
-failure_webhook_url: "" # HTTP POST webhook for service failures (empty = disabled)
 failure_retries: 3 # Number of consecutive failures before webhook triggers (default: 3)
-authorization: "password" # BasicAuth credentials: "username:password" or just "password" (empty = no auth)
+authorization: password # BasicAuth credentials: "username:password" or just "password" (empty = no auth)
 services:
-  # Example: A simple ping service
-  - name: ping-example
-    command: ping localhost -t
-    workdir: ""
-    env: {}
-    enabled: false
-    schedule: ""
-  # Example: A slower timestamp service (prints every 5 seconds)
-  - name: timestamp-example
-    command: powershell -Command "while($true) { Get-Date; Start-Sleep -Seconds 5 }"
-    workdir: ""
-    env:
-      EXAMPLE_VAR: hello
-    enabled: true
-    schedule: ""
-  # Example: Scheduled service that runs every 5 minutes
-  - name: hourly-cleanup
-    command: cmd /c "echo Cleaning up at %DATE% %TIME%"
-    schedule: '*/5 * * * *'
-    enabled: true
-    workdir: ""
-    env: {}
-  # Example: One-off service that runs once on startup
-  - name: one-off
-    command: uv --help
-    enabled: true
-    workdir: ""
-    env: {}
-    schedule: ""
+# Example: A simple ping service
+- name: ping-example
+  command: ping localhost -t
+  enabled: false
+# Example: A slower timestamp service (prints every 5 seconds)
+- name: timestamp-example
+  command: powershell -Command "while($true) { Get-Date; Start-Sleep -Seconds 5 }"
+  env:
+    EXAMPLE_VAR: hello
+  enabled: true
+# Example: Scheduled service that runs every 5 minutes
+- name: hourly-cleanup
+  command: cmd /c "echo Cleaning up at %DATE% %TIME%"
+  enabled: true
+  schedule: "*/5 * * * *"
+# Example: One-off service that runs once on startup
+- name: one-off
+  command: uv --help
+  enabled: true

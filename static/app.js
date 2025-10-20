@@ -374,6 +374,7 @@ async function handleCreateService(e) {
     const command = document.getElementById('createCommand').value;
     const workdir = document.getElementById('createWorkdir').value;
     const envText = document.getElementById('createEnv').value;
+    const schedule = document.getElementById('createSchedule').value;
 
     const env = {};
     envText.split('\n').forEach(line => {
@@ -390,7 +391,8 @@ async function handleCreateService(e) {
         name,
         command,
         workdir: workdir || undefined,
-        env: Object.keys(env).length > 0 ? env : undefined
+        env: Object.keys(env).length > 0 ? env : undefined,
+        schedule: schedule || undefined
     };
 
     try {
@@ -436,9 +438,11 @@ async function showEditForm() {
         }
         document.getElementById('editEnv').value = envLines.join('\n');
 
-        // Store enabled and schedule state to preserve them during update
+        // Set the schedule field
+        document.getElementById('editSchedule').value = service.schedule || '';
+
+        // Store enabled state to preserve it during update
         document.getElementById('editForm').dataset.enabled = JSON.stringify(service.enabled);
-        document.getElementById('editForm').dataset.schedule = service.schedule || '';
 
         document.getElementById('editForm').style.display = 'block';
     } catch (error) {
@@ -459,6 +463,7 @@ async function handleUpdateService(e) {
     const command = document.getElementById('editCommand').value;
     const workdir = document.getElementById('editWorkdir').value;
     const envText = document.getElementById('editEnv').value;
+    const schedule = document.getElementById('editSchedule').value;
 
     const env = {};
     envText.split('\n').forEach(line => {
@@ -471,10 +476,9 @@ async function handleUpdateService(e) {
         }
     });
 
-    // Retrieve preserved enabled and schedule values
+    // Retrieve preserved enabled value
     const editForm = document.getElementById('editForm');
     const enabledValue = JSON.parse(editForm.dataset.enabled);
-    const scheduleValue = editForm.dataset.schedule;
 
     const service = {
         name,
@@ -482,7 +486,7 @@ async function handleUpdateService(e) {
         workdir: workdir || undefined,
         env: Object.keys(env).length > 0 ? env : undefined,
         enabled: enabledValue,
-        schedule: scheduleValue || undefined
+        schedule: schedule || undefined
     };
 
     try {
