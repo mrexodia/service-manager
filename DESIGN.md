@@ -62,12 +62,17 @@ configMgr.AddService() → Saves to disk → Triggers reload → reloadAndNotify
 - `NewConfigManager()`: Creates manager without listener (listener passed to StartWatching)
 - `StartWatching()`: Loads initial config, emits initial state, starts background watcher
 - **Only the watcher emits events** via `OnServicesUpdated()` callback
-- API methods (`AddService`, `UpdateService`, `DeleteService`, `SetServiceEnabled`) only save to disk
-- After saving, they trigger reload via channel → watcher handles notification
+- **Critical: `cm.services` is NEVER mutated by API methods** - it represents the OLD state for comparison
+- API methods use **copy-modify-save pattern**:
+  1. Create a copy of services: `modifiedServices := cm.copyServices()`
+  2. Modify the copy (NOT cm.services)
+  3. Save the copy to disk
+  4. Trigger reload via channel → watcher handles notification
 - Uses polling (5s interval) + checksum verification to detect external changes
 - Uses cooldown (2s) to avoid excessive reloads
 - Preserves global config fields when saving service changes
 - `RootConfig` struct handles combined format (global fields + services array)
+- Uses `yaml.CommentMap` for automatic comment preservation (no manual AST manipulation)
 
 #### 2. Service Manager (`manager.go`)
 - Implements `ConfigListener` interface
@@ -132,7 +137,8 @@ configMgr.AddService() → Saves to disk → Triggers reload → reloadAndNotify
 
 ### Technology Stack
 - **Language**: Go 1.21+
-- **YAML parsing**: `gopkg.in/yaml.v3`
+- **YAML parsing**: `github.com/goccy/go-yaml` (with automatic comment preservation via CommentMap)
+- **Command parsing**: `github.com/google/shlex` (for parsing command strings with arguments)
 - **Cron scheduling**: `github.com/robfig/cron/v3`
 - **Web framework**: Standard library `net/http`
 - **WebSockets**: `gorilla/websocket`
@@ -153,10 +159,7 @@ authorization: "username:password"     # HTTP Basic Auth for API (empty = disabl
 services:
   # Continuous service (long-running)
   - name: example-service
-    command: /path/to/executable
-    args:
-      - --arg1
-      - value1
+    command: "/path/to/executable --arg1 value1"
     workdir: /path/to/working/directory
     env:
       KEY1: value1
@@ -165,16 +168,12 @@ services:
 
   # Scheduled service (cron-based)
   - name: cleanup-job
-    command: /path/to/cleanup
-    args:
-      - --deep-clean
+    command: "/path/to/cleanup --deep-clean"
     schedule: "0 2 * * *"  # Daily at 2:00 AM
     enabled: true
 
   - name: another-service
-    command: python
-    args:
-      - script.py
+    command: "python script.py"
     workdir: /app
     env:
       PYTHONUNBUFFERED: "1"
@@ -190,8 +189,7 @@ services:
 
 ### Service Configuration Fields
 - `name` (required): Unique service identifier
-- `command` (required): Executable path or command
-- `args` (optional): List of command-line arguments
+- `command` (required): Full command with arguments (e.g. `"python -u server.py"` or `"/usr/bin/node app.js --port 3000"`)
 - `workdir` (optional): Working directory for the process
 - `env` (optional): Environment variables as key-value pairs
 - `enabled` (optional): Auto-start flag, defaults to `true` if omitted
@@ -327,8 +325,7 @@ API responses also include the `enabled` field from the service configuration.
 1. Click "Create New Service" or "Edit" button
 2. Form appears with fields:
    - Service Name (required, disabled when editing)
-   - Command (required)
-   - Arguments (textarea, one arg per line)
+   - Command (required, full command with arguments e.g. "python -u server.py")
    - Working Directory (optional)
    - Environment Variables (textarea, KEY=VALUE format, one per line)
 3. Click "Save" → Updates YAML file and reloads config
@@ -515,6 +512,18 @@ These operations don't modify YAML, only control runtime state:
 - **Change detection**: Modtime check first, then SHA256 checksum if newer
 - **Atomic writes**: Write to temp file, then rename (atomic on POSIX systems)
 - **Preserve global config**: When saving services, read existing file to preserve global fields
+- **Comment preservation**: Automatic via `yaml.CommentMap` - no manual AST manipulation needed
+
+### State Management in ConfigManager
+- **cm.services is read-only for API methods** - represents the OLD state
+- **API methods use copy-modify-save pattern**:
+  1. Copy current services
+  2. Modify the copy
+  3. Save copy to disk
+  4. Trigger reload
+- **Only reloadAndNotify() updates cm.services** after comparing old vs new
+- This allows proper change detection and `toKill` calculation
+- The watcher compares old state (cm.services) with new state (from disk) to determine which services need to be stopped
 
 ### Service Management
 - **Service Order Preservation**: Maintain separate slice to preserve YAML order

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/goccy/go-yaml"
 )
 
 // ============================================================================
@@ -102,9 +102,9 @@ type ConfigListener interface {
 // ConfigManager manages the services.yaml file and notifies listeners of changes
 type ConfigManager struct {
 	yamlPath string
-	yamlRoot *yaml.Node
+	comments yaml.CommentMap // Preserves comments automatically
 
-	services []ServiceConfig
+	services []ServiceConfig // NEVER modified by API methods, only by watcher
 
 	// For change detection
 	lastModTime  time.Time
@@ -125,6 +125,7 @@ func NewConfigManager(yamlPath string) *ConfigManager {
 	return &ConfigManager{
 		yamlPath:       yamlPath,
 		services:       make([]ServiceConfig, 0),
+		comments:       yaml.CommentMap{},
 		checkInterval:  5 * time.Second,
 		reloadCooldown: 2 * time.Second,
 		stopChan:       make(chan struct{}),
@@ -227,14 +228,11 @@ func (cm *ConfigManager) reloadAndNotify(listener ConfigListener) error {
 		return err
 	}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("invalid YAML: %w", err)
-	}
-
+	// Parse with comment preservation
+	newComments := yaml.CommentMap{}
 	var rootConfig RootConfig
-	if err := yaml.Unmarshal(data, &rootConfig); err != nil {
-		return err
+	if err := yaml.UnmarshalWithOptions(data, &rootConfig, yaml.CommentToMap(newComments)); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
 	}
 
 	// Compare and calculate changes
@@ -243,7 +241,7 @@ func (cm *ConfigManager) reloadAndNotify(listener ConfigListener) error {
 	toKill := calculateServicesToKill(cm.services, rootConfig.Services)
 
 	// Update internal state
-	cm.yamlRoot = &root
+	cm.comments = newComments
 	cm.services = rootConfig.Services
 	cm.lastModTime = fileInfo.ModTime()
 	cm.lastChecksum = checksum
@@ -492,17 +490,13 @@ func (cm *ConfigManager) loadFromDisk() error {
 		return err
 	}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-
+	// Load with comment preservation
+	cm.comments = yaml.CommentMap{}
 	var rootConfig RootConfig
-	if err := yaml.Unmarshal(data, &rootConfig); err != nil {
+	if err := yaml.UnmarshalWithOptions(data, &rootConfig, yaml.CommentToMap(cm.comments)); err != nil {
 		return err
 	}
 
-	cm.yamlRoot = &root
 	cm.services = rootConfig.Services
 	cm.lastModTime = fileInfo.ModTime()
 	cm.lastChecksum, _ = cm.fileChecksum()
@@ -510,304 +504,44 @@ func (cm *ConfigManager) loadFromDisk() error {
 	return nil
 }
 
-// saveToDisk saves the given services to disk while preserving comments and formatting
+// saveToDisk saves the given services to disk while preserving comments and global config
 // Caller must hold the lock
 func (cm *ConfigManager) saveToDisk(servicesToSave []ServiceConfig) error {
-	// If we don't have a yamlRoot yet (new file), use simple marshal
-	if cm.yamlRoot == nil {
-		return cm.saveToDiskSimple(servicesToSave)
-	}
-
-	// Use yamlRoot to preserve comments and structure
-	servicesNode, err := cm.findServicesNode(cm.yamlRoot)
-	if err != nil {
-		// If we can't find services node, fall back to simple marshal
-		return cm.saveToDiskSimple(servicesToSave)
-	}
-
-	// Build map of existing service nodes by name
-	existingNodes := make(map[string]*yaml.Node)
-	for _, node := range servicesNode.Content {
-		var svc ServiceConfig
-		if err := node.Decode(&svc); err != nil {
-			continue
-		}
-		existingNodes[svc.Name] = node
-	}
-
-	// Build new content array, reusing or creating nodes as needed
-	newContent := make([]*yaml.Node, 0, len(servicesToSave))
-	for _, svc := range servicesToSave {
-		if existingNode, exists := existingNodes[svc.Name]; exists {
-			// Update existing node in-place to preserve comments
-			if err := cm.updateServiceNode(existingNode, svc); err != nil {
-				return fmt.Errorf("failed to update service node: %w", err)
-			}
-			newContent = append(newContent, existingNode)
-		} else {
-			// New service - create new node
-			var serviceNode yaml.Node
-			if err := serviceNode.Encode(svc); err != nil {
-				return fmt.Errorf("failed to encode service: %w", err)
-			}
-			// Set block style to match existing services
-			setBlockStyle(&serviceNode)
-			newContent = append(newContent, &serviceNode)
-		}
-	}
-
-	// Replace services content
-	servicesNode.Content = newContent
-
-	// Write back to file
-	return cm.writeYAML(cm.yamlRoot)
-}
-
-// saveToDiskSimple uses yaml.Marshal for initial file creation or fallback
-func (cm *ConfigManager) saveToDiskSimple(servicesToSave []ServiceConfig) error {
 	// Read existing file to preserve global config
-	existingData, err := os.ReadFile(cm.yamlPath)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
 	var rootConfig RootConfig
-	if len(existingData) > 0 {
-		// Preserve existing global config
-		if err := yaml.Unmarshal(existingData, &rootConfig); err != nil {
-			return err
+	if data, err := os.ReadFile(cm.yamlPath); err == nil {
+		// Load existing config to preserve global settings
+		// Use temporary comment map for reading, we'll use cm.comments for writing
+		tempComments := yaml.CommentMap{}
+		yaml.UnmarshalWithOptions(data, &rootConfig, yaml.CommentToMap(tempComments))
+		// Merge comments if we don't have any yet
+		if len(cm.comments) == 0 {
+			cm.comments = tempComments
 		}
 	}
 
 	// Update only the services part
 	rootConfig.Services = servicesToSave
 
-	// Encode to YAML
-	data, err := yaml.Marshal(rootConfig)
+	// Marshal with comments preserved
+	data, err := yaml.MarshalWithOptions(rootConfig, yaml.WithComment(cm.comments))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal YAML: %w", err)
 	}
 
+	// Write atomically
 	tempPath := cm.yamlPath + ".tmp"
 	if err := os.WriteFile(tempPath, data, 0644); err != nil {
-		return err
+		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
 	if err := os.Rename(tempPath, cm.yamlPath); err != nil {
 		os.Remove(tempPath)
-		return err
+		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
 	// Don't update lastModTime/checksum here - let the watcher detect it
 	// This ensures consistent behavior between API and file changes
-
-	return nil
-}
-
-// updateServiceNode updates a service node in-place, preserving comments
-func (cm *ConfigManager) updateServiceNode(node *yaml.Node, svc ServiceConfig) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("service node is not a mapping")
-	}
-
-	// Build a map of what we need to set
-	updates := map[string]interface{}{
-		"name":     svc.Name,
-		"command":  svc.Command,
-		"workdir":  svc.Workdir,
-		"env":      svc.Env,
-		"enabled":  svc.Enabled,
-		"schedule": svc.Schedule,
-	}
-
-	// Update or add each field
-	for key, value := range updates {
-		cm.setOrUpdateField(node, key, value)
-	}
-
-	return nil
-}
-
-// setOrUpdateField sets or updates a field in a mapping node
-func (cm *ConfigManager) setOrUpdateField(node *yaml.Node, key string, value any) {
-	// Find existing key
-	for i := 0; i < len(node.Content); i += 2 {
-		keyNode := node.Content[i]
-		if keyNode.Value == key {
-			// Update existing value
-			valueNode := node.Content[i+1]
-			cm.encodeValue(valueNode, value)
-			return
-		}
-	}
-
-	// Key not found - add it
-	keyNode := &yaml.Node{
-		Kind:  yaml.ScalarNode,
-		Value: key,
-	}
-	valueNode := &yaml.Node{}
-	cm.encodeValue(valueNode, value)
-	node.Content = append(node.Content, keyNode, valueNode)
-}
-
-// encodeValue encodes a value into a yaml.Node
-func (cm *ConfigManager) encodeValue(node *yaml.Node, value any) {
-	// Handle nil pointers (for enabled field)
-	if value == nil {
-		node.Kind = yaml.ScalarNode
-		node.Tag = "!!null"
-		node.Value = ""
-		return
-	}
-
-	// Handle pointer to bool (for enabled field)
-	if boolPtr, ok := value.(*bool); ok {
-		if boolPtr == nil {
-			node.Kind = yaml.ScalarNode
-			node.Tag = "!!null"
-			node.Value = ""
-			return
-		}
-		node.Kind = yaml.ScalarNode
-		node.Tag = "!!bool"
-		if *boolPtr {
-			node.Value = "true"
-		} else {
-			node.Value = "false"
-		}
-		return
-	}
-
-	// Handle empty strings (omitempty behavior)
-	if str, ok := value.(string); ok && str == "" {
-		node.Kind = yaml.ScalarNode
-		node.Tag = "!!str"
-		node.Value = ""
-		return
-	}
-
-	// Handle empty maps (omitempty behavior)
-	if env, ok := value.(map[string]string); ok && len(env) == 0 {
-		node.Kind = yaml.MappingNode
-		node.Tag = "!!map"
-		node.Content = nil
-		return
-	}
-
-	// Handle non-empty maps
-	if env, ok := value.(map[string]string); ok {
-		node.Kind = yaml.MappingNode
-		node.Tag = "!!map"
-		node.Content = make([]*yaml.Node, 0, len(env)*2)
-		for k, v := range env {
-			node.Content = append(node.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k},
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v},
-			)
-		}
-		return
-	}
-
-	// For anything else, use default encoding
-	var temp yaml.Node
-	temp.Encode(value)
-	*node = temp
-}
-
-// setBlockStyle recursively sets YAML nodes to use block style formatting
-func setBlockStyle(node *yaml.Node) {
-	if node == nil {
-		return
-	}
-
-	switch node.Kind {
-	case yaml.MappingNode:
-		// Use block style for mappings (multi-line)
-		node.Style = 0 // Default style for mappings is block
-		// Recursively set style for all child nodes
-		for _, child := range node.Content {
-			setBlockStyle(child)
-		}
-	case yaml.SequenceNode:
-		// Keep flow style for sequences (inline like [a, b, c])
-		// This is already set by encodeValue, but ensure it stays
-		if node.Style == 0 {
-			node.Style = yaml.FlowStyle
-		}
-		for _, child := range node.Content {
-			setBlockStyle(child)
-		}
-	case yaml.ScalarNode:
-		// Use default style for scalars
-		node.Style = 0
-	}
-}
-
-// findServicesNode locates the services array node in the YAML tree
-func (cm *ConfigManager) findServicesNode(root *yaml.Node) (*yaml.Node, error) {
-	// Root is a document node, content[0] is the mapping node
-	if len(root.Content) == 0 {
-		return nil, fmt.Errorf("empty YAML document")
-	}
-
-	docNode := root.Content[0]
-	if docNode.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("expected mapping node at document root")
-	}
-
-	// Find the "services" key
-	for i := 0; i < len(docNode.Content); i += 2 {
-		keyNode := docNode.Content[i]
-		valueNode := docNode.Content[i+1]
-
-		if keyNode.Value == "services" {
-			if valueNode.Kind != yaml.SequenceNode {
-				return nil, fmt.Errorf("services is not a sequence")
-			}
-			return valueNode, nil
-		}
-	}
-
-	return nil, fmt.Errorf("services key not found in YAML")
-}
-
-// writeYAML writes a YAML node back to the config file atomically
-func (cm *ConfigManager) writeYAML(root *yaml.Node) error {
-	// Write to temporary file first
-	tmpFile := cm.yamlPath + ".tmp"
-	file, err := os.Create(tmpFile)
-	if err != nil {
-		return fmt.Errorf("failed to create temp config file: %w", err)
-	}
-
-	// Ensure temp file is removed if something goes wrong
-	defer func() {
-		if file != nil {
-			file.Close()
-		}
-		// Remove temp file if it still exists (in case of error)
-		if _, err := os.Stat(tmpFile); err == nil {
-			os.Remove(tmpFile)
-		}
-	}()
-
-	encoder := yaml.NewEncoder(file)
-	encoder.SetIndent(2)
-
-	if err := encoder.Encode(root); err != nil {
-		encoder.Close()
-		return fmt.Errorf("failed to encode YAML: %w", err)
-	}
-
-	encoder.Close()
-	file.Close()
-	file = nil // Mark as closed so defer doesn't close again
-
-	// Atomically replace the original file
-	if err := os.Rename(tmpFile, cm.yamlPath); err != nil {
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
 
 	return nil
 }
