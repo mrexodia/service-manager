@@ -261,7 +261,6 @@ func (s *Service) Start() error {
 // Stop stops the service
 func (s *Service) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Signal to stop auto-restart first (only close once)
 	s.stopOnce.Do(func() {
@@ -270,6 +269,7 @@ func (s *Service) Stop() error {
 
 	// If there's no running process, we're done
 	if !s.running {
+		s.mu.Unlock()
 		// Even if not running, we signaled to stop auto-restart above
 		return nil
 	}
@@ -277,15 +277,20 @@ func (s *Service) Stop() error {
 	// Log before stopping
 	s.logServiceEvent(fmt.Sprintf("Stopping service '%s' (PID: %d)", s.Config.Name, s.pid))
 
-	// Kill the process
+	// Unlock before calling gracefulStop to avoid deadlock
+	s.mu.Unlock()
+
+	// Attempt graceful shutdown
 	if s.cmd != nil && s.cmd.Process != nil {
-		if err := s.cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill process: %w", err)
+		if err := gracefulStop(s, 5*time.Second); err != nil {
+			return fmt.Errorf("failed to stop process: %w", err)
 		}
 	}
 
+	s.mu.Lock()
 	s.running = false
 	s.pid = 0
+	s.mu.Unlock()
 
 	return nil
 }
