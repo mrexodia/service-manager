@@ -40,6 +40,87 @@ function setupEventListeners() {
             }
         });
     });
+
+    // Working directory change listeners for .env detection
+    let editWorkdirDebounce;
+    document.getElementById('editWorkdir').addEventListener('input', (e) => {
+        clearTimeout(editWorkdirDebounce);
+        editWorkdirDebounce = setTimeout(() => {
+            checkDotenv(selectedService, e.target.value, 'edit');
+        }, 500); // Debounce to avoid too many API calls
+    });
+
+    let createWorkdirDebounce;
+    document.getElementById('createWorkdir').addEventListener('input', (e) => {
+        clearTimeout(createWorkdirDebounce);
+        createWorkdirDebounce = setTimeout(() => {
+            // For create form, we don't have a service name yet, so use placeholder
+            checkDotenv('_new', e.target.value, 'create');
+        }, 500); // Debounce to avoid too many API calls
+    });
+}
+
+// Check for .env file in working directory
+async function checkDotenv(serviceName, workdir, formType) {
+    const indicatorId = formType === 'edit' ? 'editDotenvIndicator' : 'createDotenvIndicator';
+    const tooltipId = formType === 'edit' ? 'editDotenvTooltip' : 'createDotenvTooltip';
+
+    const indicator = document.getElementById(indicatorId);
+    const tooltip = document.getElementById(tooltipId);
+
+    if (!workdir) {
+        // Hide indicator if no working directory
+        indicator.style.display = 'none';
+        return;
+    }
+
+    try {
+        // For new services, we need to use a dummy service name
+        const checkServiceName = serviceName === '_new' ?
+            (Object.keys(lastServicesSnapshot || {}).length > 0 ?
+                Object.keys(lastServicesSnapshot)[0] : 'dummy') :
+            serviceName;
+
+        const response = await fetch(`/api/services/${checkServiceName}/dotenv?workdir=${encodeURIComponent(workdir)}`);
+
+        if (!response.ok) {
+            // If service doesn't exist yet (creating new), hide the indicator
+            indicator.style.display = 'none';
+            return;
+        }
+
+        const data = await response.json();
+
+        if (data.exists) {
+            // Show indicator
+            indicator.style.display = 'inline-block';
+
+            // Format .env contents for tooltip
+            if (data.raw) {
+                tooltip.textContent = data.raw;
+            } else if (data.variables) {
+                // Format variables as KEY=VALUE
+                const lines = [];
+                for (const [key, value] of Object.entries(data.variables)) {
+                    lines.push(`${key}=${value}`);
+                }
+                tooltip.textContent = lines.join('\n');
+            } else {
+                tooltip.textContent = '.env file found (empty or unreadable)';
+            }
+
+            if (data.error) {
+                tooltip.textContent = `Error: ${data.error}`;
+            }
+        } else {
+            // Hide indicator
+            indicator.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Failed to check for .env file:', error);
+        // Hide indicator on error
+        indicator.style.display = 'none';
+    }
 }
 
 // Load all services
@@ -354,6 +435,9 @@ function showCreateView() {
 
     // Clear form
     document.getElementById('createServiceForm').reset();
+
+    // Hide .env indicator
+    document.getElementById('createDotenvIndicator').style.display = 'none';
 }
 
 // Hide create view
@@ -376,22 +460,11 @@ async function handleCreateService(e) {
     const envText = document.getElementById('createEnv').value;
     const schedule = document.getElementById('createSchedule').value;
 
-    const env = {};
-    envText.split('\n').forEach(line => {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-            const [key, ...valueParts] = trimmed.split('=');
-            if (key && valueParts.length > 0) {
-                env[key.trim()] = valueParts.join('=').trim();
-            }
-        }
-    });
-
     const service = {
         name,
         command,
         workdir: workdir || undefined,
-        env: Object.keys(env).length > 0 ? env : undefined,
+        env_raw: envText.trim() || undefined,  // Send raw text for godotenv parsing
         schedule: schedule || undefined
     };
 
@@ -445,6 +518,14 @@ async function showEditForm() {
         document.getElementById('editForm').dataset.enabled = JSON.stringify(service.enabled);
 
         document.getElementById('editForm').style.display = 'block';
+
+        // Check for .env file in the working directory
+        if (service.workdir) {
+            checkDotenv(service.name, service.workdir, 'edit');
+        } else {
+            // Hide indicator if no working directory
+            document.getElementById('editDotenvIndicator').style.display = 'none';
+        }
     } catch (error) {
         console.error('Failed to load service for editing:', error);
     }
@@ -465,17 +546,6 @@ async function handleUpdateService(e) {
     const envText = document.getElementById('editEnv').value;
     const schedule = document.getElementById('editSchedule').value;
 
-    const env = {};
-    envText.split('\n').forEach(line => {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-            const [key, ...valueParts] = trimmed.split('=');
-            if (key && valueParts.length > 0) {
-                env[key.trim()] = valueParts.join('=').trim();
-            }
-        }
-    });
-
     // Retrieve preserved enabled value
     const editForm = document.getElementById('editForm');
     const enabledValue = JSON.parse(editForm.dataset.enabled);
@@ -484,7 +554,7 @@ async function handleUpdateService(e) {
         name,
         command,
         workdir: workdir || undefined,
-        env: Object.keys(env).length > 0 ? env : undefined,
+        env_raw: envText.trim() || undefined,  // Send raw text for godotenv parsing
         enabled: enabledValue,
         schedule: schedule || undefined
     };

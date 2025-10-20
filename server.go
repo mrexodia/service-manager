@@ -7,13 +7,27 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 )
 
 //go:embed static
 var staticFiles embed.FS
+
+// ServiceRequest represents the JSON request for creating/updating services
+type ServiceRequest struct {
+	Name     string  `json:"name"`
+	Command  string  `json:"command"`
+	Workdir  string  `json:"workdir"`
+	EnvRaw   string  `json:"env_raw"`   // Raw environment variables in dotenv format
+	Env      map[string]string `json:"env"` // For backwards compatibility
+	Enabled  *bool   `json:"enabled"`
+	Schedule string  `json:"schedule"`
+}
 
 // Server represents the web server
 type Server struct {
@@ -84,6 +98,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/services/{name}", s.getService)
 	mux.HandleFunc("PUT /api/services/{name}", s.updateService)
 	mux.HandleFunc("DELETE /api/services/{name}", s.deleteService)
+	mux.HandleFunc("GET /api/services/{name}/dotenv", s.getDotenv)
 	mux.HandleFunc("POST /api/services/{name}/start", s.startService)
 	mux.HandleFunc("POST /api/services/{name}/stop", s.stopService)
 	mux.HandleFunc("POST /api/services/{name}/restart", s.restartService)
@@ -176,15 +191,39 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 
 // createService creates a new service
 func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
-	var cfg ServiceConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	var req ServiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if cfg.Name == "" || cfg.Command == "" {
+	if req.Name == "" || req.Command == "" {
 		http.Error(w, "Name and command are required", http.StatusBadRequest)
 		return
+	}
+
+	// Parse environment variables
+	var envMap map[string]string
+	if req.EnvRaw != "" {
+		// Parse using godotenv for uniform handling
+		parsed, err := godotenv.Unmarshal(req.EnvRaw)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid environment variable format: %v", err), http.StatusBadRequest)
+			return
+		}
+		envMap = parsed
+	} else if req.Env != nil {
+		// Backwards compatibility: use provided map
+		envMap = req.Env
+	}
+
+	cfg := ServiceConfig{
+		Name:     req.Name,
+		Command:  req.Command,
+		Workdir:  req.Workdir,
+		Env:      envMap,
+		Enabled:  req.Enabled,
+		Schedule: req.Schedule,
 	}
 
 	if err := s.configManager.AddService(cfg); err != nil {
@@ -203,19 +242,40 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 // updateService updates an existing service
 func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var cfg ServiceConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	var req ServiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if cfg.Command == "" {
+	if req.Command == "" {
 		http.Error(w, "Command is required", http.StatusBadRequest)
 		return
 	}
 
-	// Ensure name matches URL
-	cfg.Name = name
+	// Parse environment variables
+	var envMap map[string]string
+	if req.EnvRaw != "" {
+		// Parse using godotenv for uniform handling
+		parsed, err := godotenv.Unmarshal(req.EnvRaw)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid environment variable format: %v", err), http.StatusBadRequest)
+			return
+		}
+		envMap = parsed
+	} else if req.Env != nil {
+		// Backwards compatibility: use provided map
+		envMap = req.Env
+	}
+
+	cfg := ServiceConfig{
+		Name:     name, // Use name from URL
+		Command:  req.Command,
+		Workdir:  req.Workdir,
+		Env:      envMap,
+		Enabled:  req.Enabled,
+		Schedule: req.Schedule,
+	}
 
 	if err := s.configManager.UpdateService(name, cfg); err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -244,6 +304,50 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+// getDotenv checks for .env file in service's working directory
+func (s *Server) getDotenv(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	// Get service from service manager
+	svc, err := s.serviceManager.GetService(name)
+	if err != nil {
+		http.Error(w, "Service not found", http.StatusNotFound)
+		return
+	}
+
+	// Check for workdir parameter (for preview when editing)
+	workdir := r.URL.Query().Get("workdir")
+	if workdir == "" {
+		workdir = svc.Config.Workdir
+	}
+
+	response := map[string]interface{}{
+		"exists": false,
+	}
+
+	// Only check if workdir is set
+	if workdir != "" {
+		dotenvPath := filepath.Join(workdir, ".env")
+		if _, err := os.Stat(dotenvPath); err == nil {
+			// .env file exists, try to parse it
+			dotenvVars, err := godotenv.Read(dotenvPath)
+			if err != nil {
+				response["error"] = fmt.Sprintf("Failed to parse .env file: %v", err)
+			} else {
+				response["exists"] = true
+				response["variables"] = dotenvVars
+
+				// Also provide raw content for display
+				content, _ := os.ReadFile(dotenvPath)
+				response["raw"] = string(content)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // startService starts a service

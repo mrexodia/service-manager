@@ -23,3 +23,9 @@ services:
 - name: one-off
   command: uv --help
   enabled: true
+- name: env-file
+  command: python test_env.py
+  workdir: test-service
+  env:
+    OVERRIDE_TEST: "1"
+  enabled: true

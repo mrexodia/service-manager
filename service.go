@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/shlex"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -214,9 +216,41 @@ func (s *Service) Start() error {
 		s.cmd.Dir = s.Config.Workdir
 	}
 
-	// Set environment variables
-	s.cmd.Env = os.Environ()
+	// Build environment variables map for proper precedence handling
+	envMap := make(map[string]string)
+
+	// Start with OS environment
+	for _, env := range os.Environ() {
+		if idx := strings.Index(env, "="); idx > 0 {
+			envMap[env[:idx]] = env[idx+1:]
+		}
+	}
+
+	// Load .env file if exists and workdir is set
+	if s.Config.Workdir != "" {
+		dotenvPath := filepath.Join(s.Config.Workdir, ".env")
+		if _, err := os.Stat(dotenvPath); err == nil {
+			dotenvVars, err := godotenv.Read(dotenvPath)
+			if err != nil {
+				s.logServiceEvent(fmt.Sprintf("Failed to parse .env file at %s: %v", dotenvPath, err))
+				return fmt.Errorf("failed to parse .env file: %w", err)
+			}
+			// Merge .env variables (these can be overridden by config)
+			for k, v := range dotenvVars {
+				envMap[k] = v
+			}
+			s.logServiceEvent(fmt.Sprintf("Loaded %d environment variables from .env file", len(dotenvVars)))
+		}
+	}
+
+	// Apply config variables (these override .env)
 	for k, v := range s.Config.Env {
+		envMap[k] = v
+	}
+
+	// Convert map back to slice for cmd.Env
+	s.cmd.Env = make([]string, 0, len(envMap))
+	for k, v := range envMap {
 		s.cmd.Env = append(s.cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
