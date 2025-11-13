@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	logBufferSize = 10 * 1024 // 10KB circular buffer
-	restartDelay  = 5 * time.Second
+	logBufferSize       = 10 * 1024        // 10KB circular buffer
+	restartDelay        = 5 * time.Second  // Delay between restart attempts
+	maxRestartAttempts  = 5                // Maximum consecutive restart attempts before giving up
 )
 
 // FailureCallback is called when a service fails
@@ -606,10 +607,19 @@ func (s *Service) monitor() {
 			// Check if service is disabled before attempting restart
 			s.mu.RLock()
 			isEnabled := s.Config.IsEnabled()
+			failures := s.consecutiveFailures
 			s.mu.RUnlock()
 
 			if !isEnabled {
 				fmt.Fprintf(os.Stderr, "Service %s is disabled. Not restarting.\n", s.Config.Name)
+				return
+			}
+
+			// Check if we've exceeded the restart limit
+			if failures >= maxRestartAttempts {
+				fmt.Fprintf(os.Stderr, "Service %s has failed %d consecutive times (limit: %d). Giving up on automatic restarts.\n",
+					s.Config.Name, failures, maxRestartAttempts)
+				fmt.Fprintf(os.Stderr, "Please check the service logs and manually restart when ready.\n")
 				return
 			}
 
