@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -88,8 +89,9 @@ func (s *Server) basicAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Start starts the web server
-func (s *Server) Start() error {
+// Serve starts the web server using the provided listener
+// This allows the caller to acquire the port first (for exclusive access)
+func (s *Server) Serve(listener net.Listener) error {
 	mux := http.NewServeMux()
 
 	// API routes with pattern matching
@@ -113,9 +115,8 @@ func (s *Server) Start() error {
 	// Wrap entire mux with auth middleware
 	handler := s.basicAuthMiddleware(mux)
 
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	fmt.Printf("Starting web server on http://%s\n", addr)
-	return http.ListenAndServe(addr, handler)
+	fmt.Printf("Starting web server on http://%s\n", listener.Addr().String())
+	return http.Serve(listener, handler)
 }
 
 // listServices returns all services with their status

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 )
 
 func main() {
@@ -20,12 +19,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check if port is already in use
+	// Acquire exclusive access to the port BEFORE starting any services
+	// This prevents duplicate services if another instance is already running
 	addr := fmt.Sprintf("%s:%d", globalConfig.Host, globalConfig.Port)
-	if isPortInUse(addr) {
-		fmt.Fprintf(os.Stderr, "Error: Port %d is already in use. Another instance may be running.\n", globalConfig.Port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Cannot bind to %s. Another instance may be running.\n", addr)
 		os.Exit(1)
 	}
+	// Don't close the listener - we'll pass it to the server
 
 	// Create service manager (implements ConfigListener)
 	serviceManager := NewServiceManager(globalConfig)
@@ -38,17 +40,18 @@ func main() {
 	defer cancel()
 	if err := configManager.StartWatching(ctx, serviceManager); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start config watcher: %v\n", err)
+		listener.Close()
 		os.Exit(1)
 	}
 	fmt.Println("Watching services.yaml for changes...")
 
-	// Start web server with configured host/port
+	// Start web server with the already-acquired listener
 	server := NewServer(serviceManager, configManager)
 
 	// Channel to signal web server errors
 	serverErrChan := make(chan error, 1)
 	go func() {
-		if err := server.Start(); err != nil {
+		if err := server.Serve(listener); err != nil {
 			serverErrChan <- err
 		}
 	}()
@@ -70,17 +73,4 @@ func main() {
 	configManager.Stop()
 	serviceManager.StopAll()
 	fmt.Println("Service Manager stopped")
-}
-
-// isPortInUse checks if a port is already in use by attempting to listen on it
-func isPortInUse(addr string) bool {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return true // Port is in use or unreachable
-	}
-	listener.Close()
-
-	// Small delay to ensure port is fully released
-	time.Sleep(10 * time.Millisecond)
-	return false
 }
