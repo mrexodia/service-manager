@@ -28,6 +28,16 @@ cd service-manager
 go build -ldflags -H=windowsgui
 ```
 
+### Building for Linux
+
+To cross-compile for Linux amd64 from any platform:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o service-manager .
+```
+
+This creates a `service-manager` binary for Linux amd64.
+
 ## Configuration
 
 Services are defined in `services.yaml`. Example:
@@ -89,6 +99,49 @@ Examples:
 - `*/5 * * * *` - Every 5 minutes
 - `0 2 * * *` - Daily at 2:00 AM
 - `0 0 * * 0` - Weekly on Sunday at midnight
+
+### Systemd Service (Linux)
+
+To run service-manager as a systemd service on Linux, create `/etc/systemd/system/service-manager.service`:
+
+```ini
+[Unit]
+Description=Service Manager - Manage and monitor services
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/service-manager
+ExecStart=/opt/service-manager/service-manager
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable service-manager
+sudo systemctl start service-manager
+sudo systemctl status service-manager
+```
+
+View logs with:
+
+```bash
+sudo journalctl -u service-manager -f
+```
 
 ### Auto-Reload
 
