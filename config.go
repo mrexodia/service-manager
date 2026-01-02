@@ -26,12 +26,13 @@ type GlobalConfig struct {
 
 // ServiceConfig represents a single service configuration
 type ServiceConfig struct {
-	Name     string            `yaml:"name"`
-	Command  string            `yaml:"command"` // Full command with arguments (e.g. "python -u server.py")
-	Workdir  string            `yaml:"workdir,omitempty"`
-	Env      map[string]string `yaml:"env,omitempty"`
-	Enabled  *bool             `yaml:"enabled,omitempty"`  // nil means true for backwards compatibility
-	Schedule string            `yaml:"schedule,omitempty"` // Cron schedule (empty = continuous service)
+	Name        string            `yaml:"name"`
+	Command     string            `yaml:"command"`               // Full command with arguments (e.g. "python -u server.py")
+	StopCommand string            `yaml:"stopCommand,omitempty"` // Optional graceful stop command (e.g. "curl -X POST http://127.0.0.1:8080/shutdown")
+	Workdir     string            `yaml:"workdir,omitempty"`
+	Env         map[string]string `yaml:"env,omitempty"`
+	Enabled     *bool             `yaml:"enabled,omitempty"`  // nil means true for backwards compatibility
+	Schedule    string            `yaml:"schedule,omitempty"` // Cron schedule (empty = continuous service)
 }
 
 // IsEnabled returns true if the service is enabled (nil means enabled for backwards compatibility)

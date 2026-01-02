@@ -24,13 +24,13 @@ const authCookieName = "sm_auth"
 
 // ServiceRequest represents the JSON request for creating/updating services
 type ServiceRequest struct {
-	Name     string  `json:"name"`
-	Command  string  `json:"command"`
-	Workdir  string  `json:"workdir"`
-	EnvRaw   string  `json:"env_raw"`   // Raw environment variables in dotenv format
-	Env      map[string]string `json:"env"` // For backwards compatibility
-	Enabled  *bool   `json:"enabled"`
-	Schedule string  `json:"schedule"`
+	Name     string            `json:"name"`
+	Command  string            `json:"command"`
+	Workdir  string            `json:"workdir"`
+	EnvRaw   string            `json:"env_raw"` // Raw environment variables in dotenv format
+	Env      map[string]string `json:"env"`     // For backwards compatibility
+	Enabled  *bool             `json:"enabled"`
+	Schedule string            `json:"schedule"`
 }
 
 // Server represents the web server

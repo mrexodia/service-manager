@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	logBufferSize = 10 * 1024 // 10KB circular buffer
-	restartDelay  = 5 * time.Second
+	logBufferSize      = 10 * 1024       // 10KB circular buffer
+	restartDelay       = 5 * time.Second // Delay between restart attempts
+	maxRestartAttempts = 5               // Maximum consecutive restart attempts before giving up
 )
 
 // FailureCallback is called when a service fails
@@ -27,6 +28,7 @@ type FailureCallback func(serviceName string, consecutiveFailures int, exitCode 
 type Service struct {
 	Config    ServiceConfig
 	cmd       *exec.Cmd
+	winJob    interface{} // Placeholder for Windows Job Object (only used on Windows)
 	running   bool
 	pid       int
 	startTime time.Time
@@ -119,10 +121,9 @@ func NewBroadcaster() *Broadcaster {
 
 // Subscribe adds a new client channel
 func (b *Broadcaster) Subscribe() chan string {
+	ch := make(chan string, 100)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	ch := make(chan string, 100)
 	b.clients[ch] = true
 	return ch
 }
@@ -131,12 +132,9 @@ func (b *Broadcaster) Subscribe() chan string {
 func (b *Broadcaster) Unsubscribe(ch chan string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	// Check if already closed
 	if b.closed[ch] {
 		return
 	}
-
 	delete(b.clients, ch)
 	close(ch)
 	b.closed[ch] = true
@@ -265,8 +263,8 @@ func (s *Service) Start() error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	// Start the process
-	if err := s.cmd.Start(); err != nil {
+	// Start the process (Windows: start + assign to Job Object before execution)
+	if err := platformStartProcess(s); err != nil {
 		s.closeLogFiles()
 		return fmt.Errorf("failed to start service %s: %w", s.Config.Name, err)
 	}
@@ -314,9 +312,23 @@ func (s *Service) Stop() error {
 	// Unlock before calling gracefulStop to avoid deadlock
 	s.mu.Unlock()
 
-	// Attempt graceful shutdown
+	// Optional graceful stop hook (best-effort)
+	if s.Config.StopCommand != "" {
+		if err := s.runStopCommand(); err != nil {
+			// Log but continue to termination fallback
+			s.logServiceEvent(fmt.Sprintf("StopCommand failed: %v", err))
+		}
+	}
+
+	// If we don't have a graceful stop mechanism configured, kill immediately.
+	stopTimeout := 5 * time.Second
+	if s.Config.StopCommand == "" {
+		stopTimeout = 0
+	}
+
+	// Attempt shutdown (optional wait), then force terminate
 	if s.cmd != nil && s.cmd.Process != nil {
-		if err := gracefulStop(s, 5*time.Second); err != nil {
+		if err := gracefulStop(s, stopTimeout); err != nil {
 			return fmt.Errorf("failed to stop process: %w", err)
 		}
 	}
@@ -324,9 +336,42 @@ func (s *Service) Stop() error {
 	s.mu.Lock()
 	s.running = false
 	s.pid = 0
+	platformCleanup(s) // Clean up platform-specific resources (close Job Object on Windows)
 	s.mu.Unlock()
 
 	return nil
+}
+
+// runStopCommand executes the configured StopCommand.
+// It is best-effort: it should trigger the service to exit, but we still have a hard-kill fallback.
+func (s *Service) runStopCommand() error {
+	parts, err := shlex.Split(s.Config.StopCommand)
+	if err != nil {
+		return fmt.Errorf("failed to parse stopCommand: %w", err)
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("empty stopCommand")
+	}
+
+	cmd := exec.Command(parts[0], parts[1:]...)
+	if s.Config.Workdir != "" {
+		cmd.Dir = s.Config.Workdir
+	}
+
+	// Give it a small timeout to avoid hanging Stop().
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("stopCommand timed out")
+	}
 }
 
 // Restart restarts the service
@@ -626,60 +671,43 @@ func (s *Service) monitor() {
 		return
 	}
 
-	// Continuous services: check if we should restart
-	// Don't restart if service exited successfully (exit code 0)
-	if exitCode == 0 {
-		fmt.Fprintf(os.Stderr, "Service %s exited successfully (exit code 0). Not restarting.\n",
-			s.Config.Name)
-		return
-	}
-
 	// Check if intentionally stopped
 	select {
 	case <-s.stopChan:
-		// Stopped intentionally, don't restart
+		// Service was intentionally stopped
 		return
 	default:
-		// Service crashed/failed, keep trying to restart
-		for {
-			// Check if service is disabled before attempting restart
-			s.mu.RLock()
-			isEnabled := s.Config.IsEnabled()
-			s.mu.RUnlock()
-
-			if !isEnabled {
-				fmt.Fprintf(os.Stderr, "Service %s is disabled. Not restarting.\n", s.Config.Name)
-				return
-			}
-
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Service %s exited with exit code %d: %v. Restarting in %v...\n",
-					s.Config.Name, exitCode, err, restartDelay)
-			} else {
-				fmt.Fprintf(os.Stderr, "Service %s exited with exit code %d. Restarting in %v...\n",
-					s.Config.Name, exitCode, restartDelay)
-			}
-
-			// Check if stop was requested during the delay
-			select {
-			case <-time.After(restartDelay):
-				// Continue with restart
-			case <-s.stopChan:
-				// Stop requested during delay, abort restart
-				return
-			}
-
-			s.mu.Lock()
-			s.restarts++
-			s.mu.Unlock()
-
-			if err := s.Start(); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to restart service %s: %v\n", s.Config.Name, err)
-				// Loop will retry after another delay
-			} else {
-				// Successfully restarted, monitor will be called by Start()
-				return
-			}
-		}
+		// Continue with restart logic
 	}
+
+	// Stop restarting after too many consecutive failures to avoid infinite loops and
+	// prevent stale monitor goroutines from resurrecting services after re-enable.
+	s.mu.RLock()
+	failures := s.consecutiveFailures
+	s.mu.RUnlock()
+	if failures >= maxRestartAttempts {
+		fmt.Fprintf(os.Stderr, "Service %s has failed %d consecutive times (limit: %d). Giving up on automatic restarts.\n",
+			s.Config.Name, failures, maxRestartAttempts)
+		fmt.Fprintf(os.Stderr, "Please check the service logs and manually restart when ready.\n")
+		return
+	}
+
+	// Handle restarts with delay
+	s.mu.Lock()
+	s.restarts++
+	s.mu.Unlock()
+
+	// Wait before restarting
+	timer := time.NewTimer(restartDelay)
+	select {
+	case <-timer.C:
+		// Continue with restart
+	case <-s.stopChan:
+		// Stop requested during delay
+		timer.Stop()
+		return
+	}
+
+	// Attempt restart
+	_ = s.Start()
 }

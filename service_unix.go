@@ -14,6 +14,8 @@ func configureCmdWindows(cmd *exec.Cmd) {
 	// No-op on Unix-like systems
 }
 
+// platformStartProcess is defined in platform_unix.go
+
 // gracefulStop attempts to gracefully stop a service process
 // It sends SIGTERM first, waits for the timeout, then sends SIGKILL if needed
 func gracefulStop(s *Service, timeout time.Duration) error {

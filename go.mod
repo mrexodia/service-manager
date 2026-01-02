@@ -12,3 +12,8 @@ require github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 require github.com/goccy/go-yaml v1.18.0
 
 require github.com/joho/godotenv v1.5.1
+
+require (
+	github.com/kolesnikovae/go-winjob v1.0.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+)
