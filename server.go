@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 
 //go:embed static
 var staticFiles embed.FS
+
+const authCookieName = "sm_auth"
 
 // ServiceRequest represents the JSON request for creating/updating services
 type ServiceRequest struct {
@@ -75,16 +78,39 @@ func (s *Server) basicAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Get credentials from request
-		username, password, ok := r.BasicAuth()
-		if !ok || username != s.username || password != s.password {
-			// Send WWW-Authenticate header to prompt browser for credentials
-			w.Header().Set("WWW-Authenticate", `Basic realm="Service Manager"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+		expectedCredentials := base64.StdEncoding.EncodeToString(
+			[]byte(s.username + ":" + s.password))
+
+		authenticated := false
+
+		// Check cookie first
+		if cookie, err := r.Cookie(authCookieName); err == nil {
+			if cookie.Value == expectedCredentials {
+				authenticated = true
+			}
 		}
 
-		// Authentication successful, proceed with handler
+		// Fall back to Basic Auth if cookie not valid
+		if !authenticated {
+			username, password, ok := r.BasicAuth()
+			if !ok || username != s.username || password != s.password {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Service Manager"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			authenticated = true
+		}
+
+		// Set/renew cookie on every successful authentication (sliding expiration)
+		http.SetCookie(w, &http.Cookie{
+			Name:     authCookieName,
+			Value:    expectedCredentials,
+			Path:     "/",
+			MaxAge:   30 * 24 * 60 * 60, // 30 days
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+
 		next.ServeHTTP(w, r)
 	})
 }
