@@ -32,8 +32,8 @@ func TestChildProcessTreeCleanup(t *testing.T) {
 	enabled := true
 	svcConfig := ServiceConfig{
 		Name: "flappy",
-		// Use go run with full path to test service
-		Command: fmt.Sprintf("go run %s/flappy -spawn -sleep 10000 -testdir=%s",
+		// Use go run with full path to test service main.go
+		Command: fmt.Sprintf("go run %s/flappy/main.go -spawn -sleep 10000 -testdir=%s",
 			testServiceDir, testServiceDir),
 		Enabled: &enabled,
 	}
@@ -42,7 +42,8 @@ func TestChildProcessTreeCleanup(t *testing.T) {
 	m.OnServicesUpdated([]ServiceConfig{svcConfig}, nil)
 
 	// Wait for child and grandchild to be spawned
-	time.Sleep(500 * time.Millisecond)
+	// Use longer wait in CI environments where go run might be slower
+	time.Sleep(2 * time.Second)
 
 	// Count go run processes for each test service
 	parentCount, err := countGoRunProcesses("flappy", testServiceDir)
@@ -111,7 +112,8 @@ func TestChildProcessTreeCleanup(t *testing.T) {
 // countGoRunProcesses returns the number of running "go run" processes for a specific test service
 func countGoRunProcesses(serviceName, testServiceDir string) (int, error) {
 	// Use pgrep to find "go run" processes that match the service name
-	cmd := exec.Command("pgrep", "-f", fmt.Sprintf("go run.*%s/%s", testServiceDir, serviceName))
+	// Pattern matches: go run .../test-service/flappy/main.go
+	cmd := exec.Command("pgrep", "-f", fmt.Sprintf("%s/%s/main.go", testServiceDir, serviceName))
 	output, err := cmd.Output()
 	if err != nil {
 		// pgrep returns exit code 1 when no processes found - that's OK
@@ -119,6 +121,13 @@ func countGoRunProcesses(serviceName, testServiceDir string) (int, error) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("pgrep failed: %w", err)
+	}
+
+	// Debug: print what pgrep found
+	if len(output) > 0 {
+		fmt.Printf("[pgrep %s/%s/main.go] found PIDs: %s", testServiceDir, serviceName, string(output))
+	} else {
+		fmt.Printf("[pgrep %s/%s/main.go] found no processes\n", testServiceDir, serviceName)
 	}
 
 	// Count lines in output

@@ -19,7 +19,9 @@ func main() {
 		// Spawn a long-lived grandchild process
 		var cmd *exec.Cmd
 		if *testDir != "" {
-			cmd = exec.Command("go", "run", fmt.Sprintf("%s/flappygrandchild", *testDir))
+			// Use full path to main.go for go run
+			grandchildPath := fmt.Sprintf("%s/flappygrandchild/main.go", *testDir)
+			cmd = exec.Command("go", "run", grandchildPath)
 		} else {
 			// Fallback for backward compatibility
 			self, _ := os.Executable()
@@ -27,7 +29,9 @@ func main() {
 		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err == nil {
+		if err := cmd.Start(); err != nil {
+			fmt.Println("failed to spawn grandchild:", err)
+		} else {
 			fmt.Println("spawned-grandchild", cmd.Process.Pid)
 		}
 	}

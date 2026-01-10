@@ -29,7 +29,8 @@ func main() {
 		// Use go run if testdir is provided, otherwise try to find the binary.
 		var cmd *exec.Cmd
 		if *testDir != "" {
-			cmd = exec.Command("go", "run", fmt.Sprintf("%s/flappychild", *testDir), "-spawn", "-testdir="+*testDir)
+			childPath := fmt.Sprintf("%s/flappychild/main.go", *testDir)
+			cmd = exec.Command("go", "run", childPath, "-spawn", "-testdir="+*testDir)
 		} else {
 			// Fallback for backward compatibility
 			self, _ := os.Executable()
