@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"time"
 
-	winjob "github.com/kolesnikovae/go-winjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -50,7 +49,9 @@ func gracefulStop(s *Service, timeout time.Duration) error {
 		fmt.Printf("Service %s (PID: %d) stopping: force killing immediately (no graceful stop configured)\n",
 			s.Config.Name, pid)
 		if s.winJob != nil {
-			_ = s.winJob.Close()
+			if job, ok := s.winJob.(interface{ Close() error }); ok {
+				_ = job.Close()
+			}
 			s.winJob = nil
 		} else {
 			cmd := exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T", "/F")
@@ -68,7 +69,9 @@ func gracefulStop(s *Service, timeout time.Duration) error {
 
 		// Preferred: close job handle (KillOnJobClose) => kills entire tree.
 		if s.winJob != nil {
-			_ = s.winJob.Close()
+			if job, ok := s.winJob.(interface{ Close() error }); ok {
+				_ = job.Close()
+			}
 			s.winJob = nil
 		} else {
 			// Fallback: taskkill the process tree
