@@ -21,6 +21,7 @@ func main() {
 		if *testDir != "" {
 			// Use full path to main.go for go run
 			grandchildPath := fmt.Sprintf("%s/flappygrandchild/main.go", *testDir)
+			fmt.Println("About to run:", grandchildPath)
 			cmd = exec.Command("go", "run", grandchildPath)
 		} else {
 			// Fallback for backward compatibility

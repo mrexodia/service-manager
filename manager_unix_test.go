@@ -43,7 +43,7 @@ func TestChildProcessTreeCleanup(t *testing.T) {
 
 	// Wait for child and grandchild to be spawned
 	// Use longer wait in CI environments where go run might be slower
-	time.Sleep(2 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	// Count go run processes for each test service
 	parentCount, err := countGoRunProcesses("flappy", testServiceDir)
