@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -19,8 +20,9 @@ func main() {
 		// Spawn a long-lived grandchild process
 		var cmd *exec.Cmd
 		if *testDir != "" {
-			// Use full path to main.go for go run
-			grandchildPath := fmt.Sprintf("%s/flappygrandchild/main.go", *testDir)
+			// testDir is the full path to test-service directory
+			// Use package path within testServiceDir
+			grandchildPath := filepath.Join(*testDir, "flappygrandchild", "main.go")
 			fmt.Println("About to run:", grandchildPath)
 			cmd = exec.Command("go", "run", grandchildPath)
 		} else {
