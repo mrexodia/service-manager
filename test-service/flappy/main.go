@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 )
 
@@ -14,6 +13,7 @@ func main() {
 	spawn := flag.Bool("spawn", false, "spawn a child process")
 	exitCode := flag.Int("exit", 1, "exit code")
 	sleepMs := flag.Int("sleep", 50, "sleep ms before exiting")
+	testDir := flag.String("testdir", "", "directory containing test services (for go run)")
 	flag.Parse()
 
 	if *child {
@@ -25,14 +25,23 @@ func main() {
 	}
 
 	if *spawn {
-		// Spawn a long-lived child (separate binary) so tests can count it reliably.
-		self, _ := os.Executable()
-		childPath := filepath.Join(filepath.Dir(self), "flappychild.exe")
-		cmd := exec.Command(childPath)
+		// Spawn a long-lived child process.
+		// Use go run if testdir is provided, otherwise try to find the binary.
+		var cmd *exec.Cmd
+		if *testDir != "" {
+			cmd = exec.Command("go", "run", fmt.Sprintf("%s/flappychild", *testDir), "-spawn", "-testdir="+*testDir)
+		} else {
+			// Fallback for backward compatibility
+			self, _ := os.Executable()
+			cmd = exec.Command(self+"child", "-spawn")
+		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		_ = cmd.Start()
-		fmt.Println("spawned-child", cmd.Process.Pid)
+		if err := cmd.Start(); err != nil {
+			fmt.Println("failed to spawn child:", err)
+		} else {
+			fmt.Println("spawned-child", cmd.Process.Pid)
+		}
 	}
 
 	// Exit quickly with failure to trigger restarts.

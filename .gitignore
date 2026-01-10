@@ -3,3 +3,7 @@ logs/
 /service-manager
 *.tmp
 rsrc.syso
+# Test binaries
+test-service/flappy
+test-service/flappychild
+test-service/flappygrandchild
