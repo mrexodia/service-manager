@@ -13,7 +13,7 @@ func main() {
 	testDir := flag.String("testdir", "", "directory containing test services (for go run)")
 	flag.Parse()
 
-	fmt.Println("flappychild-start")
+	fmt.Println("flappychild-start, spawnGrandchild:", *spawnGrandchild, "testDir:", *testDir)
 
 	if *spawnGrandchild {
 		// Spawn a long-lived grandchild process
@@ -26,10 +26,12 @@ func main() {
 		} else {
 			// Fallback for backward compatibility
 			self, _ := os.Executable()
+			fmt.Println("Using fallback, self:", self)
 			cmd = exec.Command(self+"grandchild")
 		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		fmt.Println("Starting command:", cmd.String())
 		if err := cmd.Start(); err != nil {
 			fmt.Println("failed to spawn grandchild:", err)
 		} else {

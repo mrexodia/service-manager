@@ -69,6 +69,14 @@ func TestChildProcessTreeCleanup(t *testing.T) {
 		t.Fatalf("expected at least 1 child process")
 	}
 	if grandchildCount == 0 {
+		// Get service to check logs
+		services := m.GetAllServices()
+		if len(services) > 0 {
+			stdout := services[0].GetStdoutBuffer()
+			stderr := services[0].GetStderrBuffer()
+			t.Logf("Service stdout: %s", string(stdout))
+			t.Logf("Service stderr: %s", string(stderr))
+		}
 		t.Fatalf("expected at least 1 grandchild process")
 	}
 
